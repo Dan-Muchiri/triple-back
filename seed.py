@@ -191,88 +191,88 @@ if __name__ == '__main__':
         db.session.add(dan)
         db.session.commit()
     
-        users = [create_user(role) for role in roles]
-        db.session.add_all(users)
-        db.session.commit()
+        # users = [create_user(role) for role in roles]
+        # db.session.add_all(users)
+        # db.session.commit()
 
-        print(f"✅ Seeded {len(users)+1} users.")
+        # print(f"✅ Seeded {len(users)+1} users.")
 
-        print("🌱 Seeding patients...")
-        patients = [create_patient() for _ in range(10)]
-        db.session.add_all(patients)
-        db.session.commit()
+        # print("🌱 Seeding patients...")
+        # patients = [create_patient() for _ in range(10)]
+        # db.session.add_all(patients)
+        # db.session.commit()
 
-        print(f"✅ Seeded {len(patients)} patients.")
+        # print(f"✅ Seeded {len(patients)} patients.")
 
-        print("🌱 Seeding visits...")
-        visits = []
+        # print("🌱 Seeding visits...")
+        # visits = []
 
-        for patient in patients:
-            # 1. Completed visit
-            complete_visit = Visit(
-                patient_id=patient.id,
-                stage='complete'
-            )
-            visits.append(complete_visit)
+        # for patient in patients:
+        #     # 1. Completed visit
+        #     complete_visit = Visit(
+        #         patient_id=patient.id,
+        #         stage='complete'
+        #     )
+        #     visits.append(complete_visit)
 
-            # 2. Random incomplete visit
-            incomplete_stage = choice([s for s in visit_stages if s != 'complete'])
-            incomplete_visit = Visit(
-                patient_id=patient.id,
-                stage=incomplete_stage
-            )
-            visits.append(incomplete_visit)
+        #     # 2. Random incomplete visit
+        #     incomplete_stage = choice([s for s in visit_stages if s != 'complete'])
+        #     incomplete_visit = Visit(
+        #         patient_id=patient.id,
+        #         stage=incomplete_stage
+        #     )
+        #     visits.append(incomplete_visit)
 
-        db.session.add_all(visits)
-        db.session.commit()
+        # db.session.add_all(visits)
+        # db.session.commit()
 
-        print(f"✅ Seeded {len(visits)} visits.")
+        # print(f"✅ Seeded {len(visits)} visits.")
 
 
-        print("🌱 Seeding triage records...")
+        # print("🌱 Seeding triage records...")
 
-        nurses = User.query.filter_by(role='nurse').all()
-        if not nurses:
-            raise Exception("❌ No nurses found in users!")
+        # nurses = User.query.filter_by(role='nurse').all()
+        # if not nurses:
+        #     raise Exception("❌ No nurses found in users!")
 
-        triage_records = []
+        # triage_records = []
 
-        for visit in visits:
-                nurse = choice(nurses)
-                triage = create_triage_record(patient_id=visit.patient_id, nurse_id=nurse.id)
+        # for visit in visits:
+        #         nurse = choice(nurses)
+        #         triage = create_triage_record(patient_id=visit.patient_id, nurse_id=nurse.id)
 
-                db.session.add(triage)
-                db.session.flush()  # So we get triage.id before visit update
+        #         db.session.add(triage)
+        #         db.session.flush()  # So we get triage.id before visit update
 
-                visit.triage_id = triage.id
+        #         visit.triage_id = triage.id
 
-                triage_records.append(triage)
+        #         triage_records.append(triage)
 
-        db.session.commit()
+        # db.session.commit()
 
-        print(f"✅ Seeded {len(triage_records)} triage records and linked them to visits.")
+        # print(f"✅ Seeded {len(triage_records)} triage records and linked them to visits.")
 
-        print("🌱 Seeding consultations...")
+        # print("🌱 Seeding consultations...")
 
-        doctors = User.query.filter_by(role='doctor').all()
-        if not doctors:
-            raise Exception("❌ No doctors found in users!")
+        # doctors = User.query.filter_by(role='doctor').all()
+        # if not doctors:
+        #     raise Exception("❌ No doctors found in users!")
 
-        consultations = []
-        for visit in visits:
-            doctor = choice(doctors)
-            consultation = create_consultation(patient_id=visit.patient_id, doctor_id=doctor.id)
+        # consultations = []
+        # for visit in visits:
+        #     doctor = choice(doctors)
+        #     consultation = create_consultation(patient_id=visit.patient_id, doctor_id=doctor.id)
             
-            db.session.add(consultation)
-            db.session.flush()
+        #     db.session.add(consultation)
+        #     db.session.flush()
 
-            visit.consultation_id = consultation.id
+        #     visit.consultation_id = consultation.id
 
-            consultations.append(consultation)
+        #     consultations.append(consultation)
 
-        db.session.commit()
+        # db.session.commit()
 
-        print(f"✅ Seeded {len(consultations)} consultations.")
+        # print(f"✅ Seeded {len(consultations)} consultations.")
 
         # ✅ Seed test types before requests
         print("🌱 Seeding test types...")
@@ -283,113 +283,113 @@ if __name__ == '__main__':
 
 
 
-        print("🌱 Seeding test requests...")
+        # print("🌱 Seeding test requests...")
 
-        lab_techs = User.query.filter_by(role='lab_tech').all()
-        imaging_techs = User.query.filter_by(role='imaging_tech').all()
+        # lab_techs = User.query.filter_by(role='lab_tech').all()
+        # imaging_techs = User.query.filter_by(role='imaging_tech').all()
 
-        if not lab_techs:
-            raise Exception("❌ No lab technicians found!")
-        if not imaging_techs:
-            raise Exception("❌ No imaging technicians found!")
+        # if not lab_techs:
+        #     raise Exception("❌ No lab technicians found!")
+        # if not imaging_techs:
+        #     raise Exception("❌ No imaging technicians found!")
 
-        test_requests = []
+        # test_requests = []
 
-        for consultation in consultations:
-            # Always create at least one lab test
-            lab_tech = choice(lab_techs)
-            test_requests.append(
-                create_test_request(
-                    consultation_id=consultation.id,
-                    category='lab',
-                    technician_id=lab_tech.id
-                )
-            )
+        # for consultation in consultations:
+        #     # Always create at least one lab test
+        #     lab_tech = choice(lab_techs)
+        #     test_requests.append(
+        #         create_test_request(
+        #             consultation_id=consultation.id,
+        #             category='lab',
+        #             technician_id=lab_tech.id
+        #         )
+        #     )
 
-            # Always create at least one imaging test
-            imaging_tech = choice(imaging_techs)
-            test_requests.append(
-                create_test_request(
-                    consultation_id=consultation.id,
-                    category='imaging',
-                    technician_id=imaging_tech.id
-                )
-            )
+        #     # Always create at least one imaging test
+        #     imaging_tech = choice(imaging_techs)
+        #     test_requests.append(
+        #         create_test_request(
+        #             consultation_id=consultation.id,
+        #             category='imaging',
+        #             technician_id=imaging_tech.id
+        #         )
+        #     )
 
-            # Optionally add 0–2 extra random test requests
-            for _ in range(randint(0, 2)):
-                category = choice(['lab', 'imaging'])
-                tech = choice(lab_techs) if category == 'lab' else choice(imaging_techs)
-                test_requests.append(
-                    create_test_request(
-                        consultation_id=consultation.id,
-                        category=category,
-                        technician_id=tech.id
-                    )
-                )
+        #     # Optionally add 0–2 extra random test requests
+        #     for _ in range(randint(0, 2)):
+        #         category = choice(['lab', 'imaging'])
+        #         tech = choice(lab_techs) if category == 'lab' else choice(imaging_techs)
+        #         test_requests.append(
+        #             create_test_request(
+        #                 consultation_id=consultation.id,
+        #                 category=category,
+        #                 technician_id=tech.id
+        #             )
+        #         )
 
-        db.session.add_all(test_requests)
-        db.session.commit()
+        # db.session.add_all(test_requests)
+        # db.session.commit()
 
-        print(f"✅ Seeded {len(test_requests)} test requests.")
-
-
-        print("🌱 Seeding prescriptions...")
-
-        pharmacists = User.query.filter_by(role='pharmacist').all()
-        if not pharmacists:
-            raise Exception("❌ No pharmacists found!")
-
-        prescriptions = []
-        for consultation in consultations:
-            for _ in range(randint(1, 2)):
-                pharmacist = choice(pharmacists) if randint(0, 1) else None
-                prescription = create_prescription(
-                    consultation_id=consultation.id,
-                    pharmacist_id=pharmacist.id if pharmacist else None
-                )
-                prescriptions.append(prescription)
-
-        db.session.add_all(prescriptions)
-        db.session.commit()
-
-        print(f"✅ Seeded {len(prescriptions)} prescriptions.")
-
-        print("🌱 Seeding payments and linking to test requests or prescriptions...")
-
-        receptionists = User.query.filter_by(role='receptionist').all()
-        if not receptionists:
-            raise Exception("❌ No receptionists found!")
-
-        payments = []
-
-        # ✅ Some test requests with payments, some without
-        for test in test_requests:
-            if choice([True, False]):
-                visit = Visit.query.filter_by(consultation_id=test.consultation_id).first()
-                if visit:
-                    receptionist = choice(receptionists)
-                    payment = create_payment(visit.id, receptionist.id)
-                    payment.test_request_id = test.id  # ✅ Correct way to link
-                    db.session.add(payment)
-                    payments.append(payment)
+        # print(f"✅ Seeded {len(test_requests)} test requests.")
 
 
-        # ✅ Some prescriptions with payments, some without
-        for pres in prescriptions:
-            if choice([True, False]):
-                visit = Visit.query.filter_by(consultation_id=pres.consultation_id).first()
-                if visit:
-                    receptionist = choice(receptionists)
-                    payment = create_payment(visit.id, receptionist.id)
-                    payment.prescription_id = pres.id  # ✅ Correct way
-                    db.session.add(payment)
-                    payments.append(payment)
+        # print("🌱 Seeding prescriptions...")
+
+        # pharmacists = User.query.filter_by(role='pharmacist').all()
+        # if not pharmacists:
+        #     raise Exception("❌ No pharmacists found!")
+
+        # prescriptions = []
+        # for consultation in consultations:
+        #     for _ in range(randint(1, 2)):
+        #         pharmacist = choice(pharmacists) if randint(0, 1) else None
+        #         prescription = create_prescription(
+        #             consultation_id=consultation.id,
+        #             pharmacist_id=pharmacist.id if pharmacist else None
+        #         )
+        #         prescriptions.append(prescription)
+
+        # db.session.add_all(prescriptions)
+        # db.session.commit()
+
+        # print(f"✅ Seeded {len(prescriptions)} prescriptions.")
+
+        # print("🌱 Seeding payments and linking to test requests or prescriptions...")
+
+        # receptionists = User.query.filter_by(role='receptionist').all()
+        # if not receptionists:
+        #     raise Exception("❌ No receptionists found!")
+
+        # payments = []
+
+        # # ✅ Some test requests with payments, some without
+        # for test in test_requests:
+        #     if choice([True, False]):
+        #         visit = Visit.query.filter_by(consultation_id=test.consultation_id).first()
+        #         if visit:
+        #             receptionist = choice(receptionists)
+        #             payment = create_payment(visit.id, receptionist.id)
+        #             payment.test_request_id = test.id  # ✅ Correct way to link
+        #             db.session.add(payment)
+        #             payments.append(payment)
 
 
-        db.session.commit()
+        # # ✅ Some prescriptions with payments, some without
+        # for pres in prescriptions:
+        #     if choice([True, False]):
+        #         visit = Visit.query.filter_by(consultation_id=pres.consultation_id).first()
+        #         if visit:
+        #             receptionist = choice(receptionists)
+        #             payment = create_payment(visit.id, receptionist.id)
+        #             payment.prescription_id = pres.id  # ✅ Correct way
+        #             db.session.add(payment)
+        #             payments.append(payment)
 
-        print(f"✅ Seeded {len(payments)} payments and linked them to test requests or prescriptions.")
+
+        # db.session.commit()
+
+        # print(f"✅ Seeded {len(payments)} payments and linked them to test requests or prescriptions.")
 
 
 
