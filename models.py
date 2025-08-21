@@ -27,6 +27,7 @@ roles = (
 )
 genders = ('male', 'female')
 visit_stages = ('reception','waiting_triage', 'waiting_consultation','waiting_lab','waiting_imaging','waiting_pharmacy','complete')
+otc_stages = ('reception','waiting_pharmacy','complete')
 lab_statuses = ('pending', 'completed')
 
 payment_methods = ('cash', 'mpesa')
@@ -238,35 +239,6 @@ class Patient(db.Model, SerializerMixin):
 class Visit(db.Model, SerializerMixin):
     __tablename__ = 'visits'
 
-    def to_dict(self):
-        test_reqs = []
-        if self.consultation:
-            test_reqs.extend([tr.to_dict() for tr in self.consultation.test_requests])
-        test_reqs.extend([tr.to_dict() for tr in getattr(self, 'test_requests_direct', [])])
-
-        return {
-            'id': self.id,
-            'patient_id': self.patient_id,
-            'triage_id': self.triage_id,
-            'consultation_id': self.consultation_id,
-            'stage': self.stage,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'patient': self.patient.to_dict() if self.patient else None,
-            'triage': self.triage.to_dict() if self.triage else None,
-            'consultation': self.consultation.to_dict() if self.consultation else None,
-            'test_requests': test_reqs,
-            'prescriptions': [p.to_dict() for p in self.consultation.prescriptions] if self.consultation else [],
-            'payments': [p.to_dict() for p in self.payments],
-        }
-
-    test_requests_direct = db.relationship(
-        'TestRequest',
-        primaryjoin='and_(Visit.id==foreign(TestRequest.consultation_id), TestRequest.consultation_id==None)',
-        viewonly=True
-    )
-
-
-
     id = db.Column(db.Integer, primary_key=True)
 
     patient_id = db.Column(db.Integer, db.ForeignKey('patients.id'), nullable=False)
@@ -280,10 +252,57 @@ class Visit(db.Model, SerializerMixin):
     patient = db.relationship('Patient', back_populates='visits')
     triage = db.relationship('TriageRecord', back_populates='visit', uselist=False)
     consultation = db.relationship('Consultation', back_populates='visit', uselist=False)
+    test_requests = db.relationship('TestRequest', back_populates='visit', cascade='all, delete-orphan')  # 👈 new
 
 
     def __repr__(self):
         return f"<Visit PatientID={self.patient_id}, Stage={self.stage}>"
+    
+   
+    @property
+    def total_charges(self):
+        consultation_total = self.consultation.fee if self.consultation else 0
+
+        # 👇 Add both direct & consultation-based test requests
+        test_total = sum(tr.amount for tr in self.test_requests)  
+        if self.consultation:
+            test_total += sum(tr.amount for tr in self.consultation.test_requests)
+
+        prescription_total = 0
+        if self.consultation:
+            prescription_total = sum(
+                (p.dispensed_units or 0) * (p.medicine.selling_price if p.medicine else 0)
+                for p in self.consultation.prescriptions
+            )
+
+        return consultation_total + test_total + prescription_total
+
+
+    @property
+    def total_payments(self):
+        return sum(p.amount for p in self.payments)
+
+    @property
+    def balance(self):
+        return self.total_charges - self.total_payments
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'patient_id': self.patient_id,
+            'stage': self.stage,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'patient': self.patient.to_dict() if self.patient else None,
+            'triage': self.triage.to_dict() if self.triage else None,
+            'consultation': self.consultation.to_dict() if self.consultation else None,
+            'direct_test_requests': [tr.to_dict() for tr in self.test_requests],
+            'test_requests': [tr.to_dict() for tr in self.consultation.test_requests] if self.consultation else [],
+            'prescriptions': [p.to_dict() for p in self.consultation.prescriptions] if self.consultation else [],
+            'payments': [p.to_dict() for p in self.payments],
+            'total_charges': self.total_charges,
+            'total_payments': self.total_payments,
+            'balance': self.balance,
+        }
     
 class TriageRecord(db.Model, SerializerMixin):
     __tablename__ = 'triage_records'
@@ -392,6 +411,26 @@ class TriageRecord(db.Model, SerializerMixin):
 class Consultation(db.Model, SerializerMixin):
     __tablename__ = 'consultations'
 
+    id = db.Column(db.Integer, primary_key=True)
+    patient_id = db.Column(db.Integer, db.ForeignKey('patients.id'), nullable=False)
+    doctor_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    diagnosis = db.Column(db.Text, nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+    chief_complain = db.Column(db.Text, nullable=True)
+    physical_exam = db.Column(db.Text, nullable=True)
+    systemic_exam = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+
+    # 👇 new field
+    fee = db.Column(db.Float, default=200, nullable=False)
+
+    # Relationships
+    patient = db.relationship('Patient', back_populates='consultations')
+    doctor = db.relationship('User', back_populates='consultations')
+    visit = db.relationship('Visit', back_populates='consultation', uselist=False)
+    test_requests = db.relationship('TestRequest', back_populates='consultation', cascade='all, delete-orphan')
+    prescriptions = db.relationship('Prescription', back_populates='consultation', cascade='all, delete-orphan')
+
     def to_dict(self):
         return {
             'id': self.id,
@@ -404,29 +443,11 @@ class Consultation(db.Model, SerializerMixin):
             'physical_exam': self.physical_exam,
             'systemic_exam': self.systemic_exam,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'test_requests': [tr.to_dict() for tr in self.test_requests] if hasattr(self, 'test_requests') else [],
-            'prescriptions': [p.to_dict() for p in self.prescriptions] if hasattr(self, 'prescriptions') else []
+            'fee': self.fee,  # 👈 include consultation fee
+            'test_requests': [tr.to_dict() for tr in self.test_requests],
+            'prescriptions': [p.to_dict() for p in self.prescriptions]
         }
 
-    id = db.Column(db.Integer, primary_key=True)
-
-    patient_id = db.Column(db.Integer, db.ForeignKey('patients.id'), nullable=False)
-    doctor_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-
-    diagnosis = db.Column(db.Text, nullable=True)
-    notes = db.Column(db.Text, nullable=True)
-    chief_complain = db.Column(db.Text, nullable=True)
-    physical_exam = db.Column(db.Text, nullable=True)
-    systemic_exam = db.Column(db.Text, nullable=True)
-
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
-
-    # Relationships
-    patient = db.relationship('Patient', back_populates='consultations')
-    doctor = db.relationship('User', back_populates='consultations')
-    visit = db.relationship('Visit', back_populates='consultation', uselist=False)
-    test_requests = db.relationship('TestRequest', back_populates='consultation', cascade='all, delete-orphan')
-    prescriptions = db.relationship('Prescription', back_populates='consultation', cascade='all, delete-orphan')
 
 
 
@@ -478,7 +499,8 @@ class TestRequest(db.Model, SerializerMixin):
     __tablename__ = 'test_requests'
 
     id = db.Column(db.Integer, primary_key=True)
-    consultation_id = db.Column(db.Integer, db.ForeignKey('consultations.id'), nullable=True)
+    consultation_id = db.Column(db.Integer, db.ForeignKey('consultations.id'), nullable=True)  # now nullable
+    visit_id = db.Column(db.Integer, db.ForeignKey('visits.id'), nullable=True) 
     technician_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
 
     test_type_id = db.Column(db.Integer, db.ForeignKey('test_types.id'), nullable=False)
@@ -489,6 +511,7 @@ class TestRequest(db.Model, SerializerMixin):
 
     # Relationships
     consultation = db.relationship('Consultation', back_populates='test_requests')
+    visit = db.relationship('Visit', back_populates='test_requests')
     technician = db.relationship('User', back_populates='test_requests')
     test_type = db.relationship('TestType')
 
@@ -496,6 +519,7 @@ class TestRequest(db.Model, SerializerMixin):
         return {
             'id': self.id,
             'consultation_id': self.consultation_id,
+            'visit_id': self.visit_id,
             'technician_id': self.technician_id,
             'test_type_id': self.test_type.id if self.test_type else None,
             'test_type': self.test_type.name if self.test_type else None,
@@ -505,7 +529,6 @@ class TestRequest(db.Model, SerializerMixin):
             'notes': self.notes,
             'status': self.status,
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'payment': self.payment.to_dict() if self.payment else None
         }
 
 
@@ -516,10 +539,7 @@ class TestRequest(db.Model, SerializerMixin):
 
     def __repr__(self):
         return f"<TestRequest Type='{self.test_type}' Category='{self.category}' Status='{self.status}'>"
-    
-    @property
-    def paid(self):
-        return self.payment is not None
+
 
     @validates('status')
     def validate_status(self, key, value):
@@ -615,13 +635,9 @@ class Prescription(db.Model, SerializerMixin):
             'dispensed_units': self.dispensed_units,
             'price': price,  # ✅ new field
             'created_at': self.created_at.isoformat() if self.created_at else None,
-            'payment': self.payment.to_dict() if self.payment else None
         }
 
 
-    @property
-    def paid(self):
-        return self.payment is not None
 
     @validates('status')
     def validate_status(self, key, value):
@@ -643,20 +659,10 @@ class Prescription(db.Model, SerializerMixin):
 class Payment(db.Model, SerializerMixin):
     __tablename__ = 'payments'
 
-    def to_dict(self):
-        return {
-            'id': self.id,
-            'visit_id': self.visit_id,
-            'amount': self.amount,
-            'service_type': self.service_type,
-            'payment_method': self.payment_method,
-            'mpesa_receipt': self.mpesa_receipt,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
-            'receptionist': self.receptionist.to_dict() if self.receptionist else None
-        }
-
     id = db.Column(db.Integer, primary_key=True)
-    visit_id = db.Column(db.Integer, db.ForeignKey('visits.id'), nullable=False)
+
+    visit_id = db.Column(db.Integer, db.ForeignKey('visits.id'), nullable=True)
+    otc_sale_id = db.Column(db.Integer, db.ForeignKey('otc_sales.id'), nullable=True)
 
     amount = db.Column(db.Float, nullable=False)
     service_type = db.Column(db.String(100), nullable=False)
@@ -665,26 +671,30 @@ class Payment(db.Model, SerializerMixin):
 
     created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
 
-    # In payments.py
-    test_request_id = db.Column(db.Integer, db.ForeignKey('test_requests.id'), nullable=True)
-    prescription_id = db.Column(db.Integer, db.ForeignKey('prescriptions.id'), nullable=True)
-
-
-    # Relationships (optional for ease of access)
-    test_request = db.relationship("TestRequest", backref=db.backref("payment", uselist=False))
-    prescription = db.relationship("Prescription", backref=db.backref("payment", uselist=False))
-
-
-    # in Payment model
     receptionist_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
-    # Relationships
+    # 🔗 Relationships
     visit = db.relationship('Visit', backref=db.backref('payments', cascade='all, delete-orphan'))
+    otc_sale = db.relationship('OTCSale', backref=db.backref('payments', cascade='all, delete-orphan'))
     receptionist = db.relationship('User', backref='payments_recorded')
 
     def __repr__(self):
-        return f"<Payment VisitID={self.visit_id} Amount={self.amount} Method={self.payment_method}>"
-    
+        return f"<Payment VisitID={self.visit_id} OTCSaleID={self.otc_sale_id} Amount={self.amount} Method={self.payment_method}>"
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'visit_id': self.visit_id,
+            'otc_sale_id': self.otc_sale_id,
+            'amount': self.amount,
+            'service_type': self.service_type,
+            'payment_method': self.payment_method,
+            'mpesa_receipt': self.mpesa_receipt,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'receptionist': self.receptionist.to_dict() if self.receptionist else None
+        }
+
+    # ✅ Validation
     @validates('receptionist_id')
     def validate_receptionist_id(self, key, receptionist_id):
         user = db.session.get(User, receptionist_id)
@@ -693,7 +703,6 @@ class Payment(db.Model, SerializerMixin):
         if user.role != 'receptionist':
             raise ValueError("User must have the role 'receptionist'")
         return receptionist_id
-
 
     @validates('amount')
     def validate_amount(self, key, value):
@@ -706,6 +715,127 @@ class Payment(db.Model, SerializerMixin):
         if value not in payment_methods:
             raise ValueError(f"Payment method must be one of {payment_methods}")
         return value
+
+    
+class OTCSale(db.Model, SerializerMixin):
+    __tablename__ = 'otc_sales'
+
+    id = db.Column(db.Integer, primary_key=True)
+    patient_name = db.Column(db.String(100), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    stage = db.Column(
+        Enum(*otc_stages, name='otc_stage_enum'),
+        default='waiting_pharmacy',
+        nullable=False
+    )
+
+    # Relationships
+    sales = db.relationship('PharmacySale', back_populates='otc_sale', cascade="all, delete-orphan")
+    # 👇 payments relationship already linked from Payment
+
+    @property
+    def total_price(self):
+        return sum(sale.total_price for sale in self.sales if sale.total_price)
+
+    @property
+    def total_payments(self):
+        return sum(p.amount for p in self.payments)
+
+    @property
+    def balance(self):
+        return self.total_price - self.total_payments
+
+    def to_dict(self):
+        return {
+        'id': self.id,
+        'patient_name': self.patient_name,
+        'created_at': self.created_at.isoformat() if self.created_at else None,
+        'sales': [sale.to_dict() for sale in self.sales],
+        'total_charges': self.total_price,   # 🔥 unified naming
+        'payments': [p.to_dict() for p in self.payments],
+        'total_payments': self.total_payments,
+        'balance': self.balance,
+        'stage': self.stage,
+    }
+
+
+
+class PharmacySale(db.Model, SerializerMixin):
+    __tablename__ = 'pharmacy_sales'
+
+    id = db.Column(db.Integer, primary_key=True)
+    otc_sale_id = db.Column(db.Integer, db.ForeignKey('otc_sales.id'), nullable=False)
+
+    pharmacist_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
+    medicine_id = db.Column(db.Integer, db.ForeignKey('medicines.id'), nullable=False)
+
+    dispensed_units = db.Column(db.Integer, nullable=False, default=1)
+
+    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+
+    # Relationships
+    otc_sale = db.relationship('OTCSale', back_populates='sales')
+    pharmacist = db.relationship('User', backref='pharmacy_sales')
+    medicine = db.relationship('Medicine')
+
+    @property
+    def total_price(self):
+        return (self.medicine.selling_price * self.dispensed_units) if self.medicine else 0
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'otc_sale_id': self.otc_sale_id,
+            'pharmacist_id': self.pharmacist_id,
+            'pharmacist': self.pharmacist.to_dict() if self.pharmacist else None,
+            'medicine_id': self.medicine_id,
+            'medication_name': self.medicine.name if self.medicine else None,
+            'selling_price': self.medicine.selling_price if self.medicine else None,
+            'dispensed_units': self.dispensed_units,
+            'total_price': self.total_price,
+            'created_at': self.created_at.isoformat() if self.created_at else None,
+        }
+    
+class PharmacyExpense(db.Model, SerializerMixin):
+    __tablename__ = "pharmacy_expenses"
+
+    id = db.Column(db.Integer, primary_key=True)
+    medicine_id = db.Column(db.Integer, db.ForeignKey("medicines.id"), nullable=False)
+    quantity_added = db.Column(db.Integer, nullable=False)
+    total_cost = db.Column(db.Float, nullable=False)  # automatically calculated
+    created_at = db.Column(db.DateTime, default=datetime.now)
+
+    # Relationships
+    medicine = db.relationship("Medicine", backref="expenses")
+
+    def __init__(self, medicine, quantity_added):
+        self.medicine = medicine
+        self.quantity_added = quantity_added
+        self.total_cost = self.calculate_total()
+
+    def calculate_total(self):
+        if self.medicine and self.quantity_added:
+            return self.medicine.buying_price * self.quantity_added
+        return 0.0
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "medicine_id": self.medicine_id,
+            "medicine_name": self.medicine.name if self.medicine else None,
+            "quantity_added": self.quantity_added,
+            "buying_price": self.medicine.buying_price if self.medicine else None,
+            "total_cost": self.total_cost,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+    @validates("quantity_added")
+    def validate_quantity(self, key, value):
+        if value <= 0:
+            raise ValueError("Quantity added must be greater than 0")
+        return value
+
+
 
 
 

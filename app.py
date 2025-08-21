@@ -8,12 +8,14 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.exc import IntegrityError
 from marshmallow import ValidationError
-from models import db, User, roles, Patient, Visit, TriageRecord, Consultation, TestRequest, Prescription, Payment, TestType, Medicine
+from models import db, User, roles, Patient, Visit, TriageRecord, Consultation, TestRequest, Prescription, Payment, TestType, Medicine, PharmacySale, OTCSale, PharmacyExpense
 from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
+from flask.views import MethodView
+from sqlalchemy import func
 
 # Load environment variables from .env file
 load_dotenv()
@@ -497,6 +499,7 @@ class Consultations(Resource):
                doctor_id=data['doctor_id'],
               diagnosis=data.get('diagnosis'),
               notes=data.get('notes'),
+              fee=200,
                chief_complain=data.get('chief_complain'),
               physical_exam=data.get('physical_exam'),
               systemic_exam=data.get('systemic_exam'),
@@ -564,18 +567,22 @@ class TestRequests(Resource):
     def post(self):
         data = request.get_json()
         try:
-            required_fields = ['test_type_id']
-            for field in required_fields:
-                if field not in data:
-                    return {'error': f"{field} is required"}, 400
+            # Require test_type_id always
+            if 'test_type_id' not in data:
+                return {'error': "test_type_id is required"}, 400
 
-            # Make sure the test type exists
+            # Require at least one parent (consultation_id or visit_id)
+            if not data.get('consultation_id') and not data.get('visit_id'):
+                return {'error': "Either consultation_id or visit_id is required"}, 400
+
+            # Validate test_type
             test_type = db.session.get(TestType, data['test_type_id'])
             if not test_type:
                 return {'error': "Invalid test_type_id"}, 400
 
             test_request = TestRequest(
-                consultation_id=data['consultation_id'],
+                consultation_id=data.get('consultation_id'),
+                visit_id=data.get('visit_id'),
                 technician_id=data.get('technician_id'),
                 test_type_id=data['test_type_id'],
                 results=data.get('results'),
@@ -652,48 +659,20 @@ class TestTypes(Resource):
     def post(self):
         data = request.get_json()
         try:
-            # Required field
-            if 'test_type_id' not in data:
-                return {'error': 'test_type_id is required'}, 400
+            required_fields = ['name', 'price', 'category']
+            for field in required_fields:
+                if field not in data:
+                    return {'error': f"{field} is required"}, 400
 
-            # Validate test type
-            test_type = db.session.get(TestType, data['test_type_id'])
-            if not test_type:
-                return {'error': "Invalid test_type_id"}, 400
-
-            # Optional: link to consultation or visit
-            consultation_id = data.get('consultation_id')
-            visit_id = data.get('visit_id')  # new optional field for direct visit
-
-            if not consultation_id and not visit_id:
-                return {'error': 'Either consultation_id or visit_id must be provided'}, 400
-
-            # If linked to visit directly, ensure visit exists
-            visit = None
-            if visit_id:
-                visit = db.session.get(Visit, visit_id)
-                if not visit:
-                    return {'error': 'Invalid visit_id'}, 400
-                consultation_id = None  # Ensure it's null for direct visit
-
-            test_request = TestRequest(
-                consultation_id=consultation_id,
-                technician_id=data.get('technician_id'),
-                test_type_id=data['test_type_id'],
-                results=data.get('results'),
-                notes=data.get('notes'),
-                status=data.get('status', 'pending')
+            test_type = TestType(
+                name=data['name'],
+                price=data['price'],
+                category=data['category']
             )
 
-            db.session.add(test_request)
+            db.session.add(test_type)
             db.session.commit()
-
-            # Optionally attach to visit for frontend convenience
-            if visit:
-                visit.test_requests_direct.append(test_request)
-                db.session.commit()
-
-            return test_request.to_dict(), 201
+            return test_type.to_dict(), 201
 
         except Exception as e:
             db.session.rollback()
@@ -960,22 +939,27 @@ class Payments(Resource):
         data = request.get_json()
 
         try:
-            required_fields = ['visit_id', 'receptionist_id', 'amount', 'service_type', 'payment_method']
+            # Must have EITHER visit_id or otc_sale_id
+            if not data.get("visit_id") and not data.get("otc_sale_id"):
+                return {"error": "Either visit_id or otc_sale_id is required"}, 400
+
+            if data.get("visit_id") and data.get("otc_sale_id"):
+                return {"error": "Provide only one of visit_id or otc_sale_id, not both"}, 400
+
+            required_fields = ['receptionist_id', 'amount', 'service_type', 'payment_method']
             for field in required_fields:
                 if field not in data:
                     return {'error': f"{field} is required"}, 400
 
             payment = Payment(
-                visit_id=data['visit_id'],
+                visit_id=data.get('visit_id'),
+                otc_sale_id=data.get('otc_sale_id'),
                 amount=data['amount'],
                 service_type=data['service_type'],
                 payment_method=data['payment_method'],
                 mpesa_receipt=data.get('mpesa_receipt'),
                 receptionist_id=data['receptionist_id'],
-                test_request_id=data.get('test_request_id'),
-                prescription_id=data.get('prescription_id'),
             )
-
 
             db.session.add(payment)
             db.session.commit()
@@ -984,7 +968,6 @@ class Payments(Resource):
         except Exception as e:
             db.session.rollback()
             return {'error': str(e)}, 400
-
 
 # GET /payments/<id>, PATCH /payments/<id>, DELETE /payments/<id>
 class PaymentByID(Resource):
@@ -1020,6 +1003,397 @@ class PaymentByID(Resource):
 
 api.add_resource(Payments, '/payments')
 api.add_resource(PaymentByID, '/payments/<int:id>')
+
+# --- OTC Sales Management Routes ---
+class OTCSales(Resource):
+    def get(self):
+        sales = OTCSale.query.all()
+        return [s.to_dict() for s in sales], 200
+
+    def post(self):
+        data = request.get_json()
+        try:
+            if "patient_name" not in data:
+                return {"error": "patient_name is required"}, 400
+
+            otc_sale = OTCSale(
+                patient_name=data["patient_name"],
+                stage=data.get("stage", "waiting_pharmacy"),
+            )
+
+            db.session.add(otc_sale)
+            db.session.commit()
+            return otc_sale.to_dict(), 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+
+class OTCSaleByID(Resource):
+    def get(self, id):
+        sale = db.session.get(OTCSale, id)
+        if not sale:
+            return {"message": "OTC sale not found"}, 404
+        return sale.to_dict(), 200
+
+    def patch(self, id):
+        sale = db.session.get(OTCSale, id)
+        if not sale:
+            return {"message": "OTC sale not found"}, 404
+
+        data = request.get_json()
+        try:
+            if "patient_name" in data:
+                sale.patient_name = data["patient_name"]
+
+            if "stage" in data:
+                sale.stage = data["stage"]
+
+            db.session.commit()
+            return sale.to_dict(), 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+    def delete(self, id):
+        sale = db.session.get(OTCSale, id)
+        if not sale:
+            return {"message": "OTC sale not found"}, 404
+
+        db.session.delete(sale)
+        db.session.commit()
+        return {"message": f"OTC sale {id} deleted"}, 200
+
+
+# --- Pharmacy Sales Management Routes ---
+class PharmacySales(Resource):
+    def get(self):
+        sales = PharmacySale.query.all()
+        return [s.to_dict() for s in sales], 200
+
+    def post(self):
+        data = request.get_json()
+        try:
+            required_fields = ["otc_sale_id", "pharmacist_id", "medicine_id", "dispensed_units"]
+            for field in required_fields:
+                if field not in data:
+                    return {"error": f"{field} is required"}, 400
+
+            # Ensure medicine exists
+            medicine = db.session.get(Medicine, data["medicine_id"])
+            if not medicine:
+                return {"error": "Medicine not found"}, 404
+
+            dispensed_units = int(data.get("dispensed_units", 1))
+
+            # Update stock + sold units
+            if medicine.stock < dispensed_units:
+                return {"error": "Not enough stock available"}, 400
+
+            medicine.stock -= dispensed_units
+            medicine.sold_units = (medicine.sold_units or 0) + dispensed_units
+
+            sale = PharmacySale(
+                otc_sale_id=data["otc_sale_id"],
+                pharmacist_id=data["pharmacist_id"],
+                medicine_id=data["medicine_id"],
+                dispensed_units=dispensed_units,
+            )
+
+            db.session.add(sale)
+            db.session.commit()
+            return sale.to_dict(), 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+
+class PharmacySaleByID(Resource):
+    def get(self, id):
+        sale = db.session.get(PharmacySale, id)
+        if not sale:
+            return {"message": "Pharmacy sale not found"}, 404
+        return sale.to_dict(), 200
+
+    def patch(self, id):
+        sale = db.session.get(PharmacySale, id)
+        if not sale:
+            return {"message": "Pharmacy sale not found"}, 404
+
+        data = request.get_json()
+        old_units = sale.dispensed_units
+        new_units = int(data.get("dispensed_units", old_units))
+
+        try:
+            # Update stock if dispensed_units changed
+            if new_units != old_units:
+                med = sale.medicine
+                diff = new_units - old_units
+
+                if diff > 0 and med.stock < diff:
+                    return {"error": "Not enough stock available"}, 400
+
+                med.stock -= diff
+                med.sold_units = (med.sold_units or 0) + diff
+
+            # Apply updates
+            for key, value in data.items():
+                setattr(sale, key, value)
+
+            db.session.commit()
+            return sale.to_dict(), 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+    def delete(self, id):
+        sale = db.session.get(PharmacySale, id)
+        if not sale:
+            return {"message": "Pharmacy sale not found"}, 404
+
+        # Restore stock
+        med = sale.medicine
+        med.stock += sale.dispensed_units
+        med.sold_units = (med.sold_units or 0) - sale.dispensed_units
+
+        db.session.delete(sale)
+        db.session.commit()
+        return {"message": f"Pharmacy sale {id} deleted"}, 200
+
+
+# Register routes
+api.add_resource(OTCSales, "/otc_sales")
+api.add_resource(OTCSaleByID, "/otc_sales/<int:id>")
+api.add_resource(PharmacySales, "/pharmacy_sales")
+api.add_resource(PharmacySaleByID, "/pharmacy_sales/<int:id>")
+
+# ===========================
+# PHARMACY EXPENSES ROUTES
+# ===========================
+class PharmacyExpenses(Resource):
+    def get(self):
+        """Return all pharmacy expenses"""
+        expenses = PharmacyExpense.query.all()
+        return [e.to_dict() for e in expenses], 200
+
+    def post(self):
+        """Add a new pharmacy expense and update medicine stock"""
+        data = request.get_json()
+        try:
+            required_fields = ["medicine_id", "quantity_added"]
+            for field in required_fields:
+                if field not in data:
+                    return {"error": f"{field} is required"}, 400
+
+            medicine = db.session.get(Medicine, data["medicine_id"])
+            if not medicine:
+                return {"error": "Medicine not found"}, 404
+
+            quantity = int(data["quantity_added"])
+            if quantity <= 0:
+                return {"error": "Quantity added must be greater than 0"}, 400
+
+            # Create expense
+            expense = PharmacyExpense(medicine=medicine, quantity_added=quantity)
+
+            # Update medicine stock
+            medicine.stock += quantity
+
+            db.session.add(expense)
+            db.session.commit()
+            return expense.to_dict(), 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+
+class PharmacyExpenseByID(Resource):
+    def get(self, id):
+        expense = db.session.get(PharmacyExpense, id)
+        if not expense:
+            return {"message": "Pharmacy expense not found"}, 404
+        return expense.to_dict(), 200
+
+    def patch(self, id):
+        expense = db.session.get(PharmacyExpense, id)
+        if not expense:
+            return {"message": "Pharmacy expense not found"}, 404
+
+        data = request.get_json()
+        try:
+            medicine = expense.medicine
+
+            if "quantity_added" in data:
+                new_quantity = int(data["quantity_added"])
+                if new_quantity <= 0:
+                    return {"error": "Quantity must be greater than 0"}, 400
+
+                # Update medicine stock based on quantity difference
+                diff = new_quantity - expense.quantity_added
+                medicine.stock += diff
+                expense.quantity_added = new_quantity
+                expense.total_cost = expense.calculate_total()
+
+            db.session.commit()
+            return expense.to_dict(), 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+    def delete(self, id):
+        expense = db.session.get(PharmacyExpense, id)
+        if not expense:
+            return {"message": "Pharmacy expense not found"}, 404
+
+        # Restore medicine stock
+        expense.medicine.stock -= expense.quantity_added
+
+        db.session.delete(expense)
+        db.session.commit()
+        return {"message": f"Pharmacy expense {id} deleted"}, 200
+
+
+# ✅ Register the new routes
+api.add_resource(PharmacyExpenses, "/pharmacy_expenses")
+api.add_resource(PharmacyExpenseByID, "/pharmacy_expenses/<int:id>")
+
+class AdminAnalytics(Resource):
+    def get(self):
+        today = datetime.utcnow()
+        first_day_month = today.replace(day=1)
+
+        # --- 1. Metrics Cards ---
+        total_patients = Patient.query.count()
+        patients_this_month = Patient.query.filter(Patient.created_at >= first_day_month).count()
+
+        # all revenue (all payments ever)
+        all_revenue = db.session.query(
+            func.coalesce(func.sum(Payment.amount), 0)
+        ).scalar()
+
+        # this month's revenue
+        total_revenue_past_month = db.session.query(
+            func.coalesce(func.sum(Payment.amount), 0)
+        ).filter(Payment.created_at >= first_day_month).scalar()
+        
+
+        lab_tests_done = (
+            db.session.query(func.count(TestRequest.id))
+            .join(TestType, TestRequest.test_type_id == TestType.id)
+            .filter(TestType.category == "lab", TestRequest.created_at >= first_day_month)
+            .scalar()
+        )
+
+        imaging_tests_done = (
+            db.session.query(func.count(TestRequest.id))
+            .join(TestType, TestRequest.test_type_id == TestType.id)
+            .filter(TestType.category == "imaging", TestRequest.created_at >= first_day_month)
+            .scalar()
+        )
+
+        # --- 3. Pharmacy Sales Breakdown ---
+        otc_revenue = db.session.query(func.coalesce(func.sum(Payment.amount), 0)) \
+            .filter(Payment.service_type == "OTC Sale", Payment.created_at >= first_day_month).scalar()
+        prescription_revenue = (
+            db.session.query(
+                func.coalesce(func.sum(Prescription.dispensed_units * Medicine.selling_price), 0)
+            )
+            .join(Medicine, Prescription.medicine_id == Medicine.id)
+            .filter(Prescription.created_at >= first_day_month)
+            .scalar()
+        )
+
+        pharmacy_breakdown = {
+            "Over The Counter": float(otc_revenue),
+            "Prescription": float(prescription_revenue)
+        }
+        # ✅ Now calculate total from breakdown
+        total_pharmacy_sales = float(otc_revenue) + float(prescription_revenue)
+
+        # --- 4. Pharmacy Expenses (this month only) ---
+        recent_expenses = PharmacyExpense.query \
+            .filter(PharmacyExpense.created_at >= first_day_month) \
+            .order_by(PharmacyExpense.created_at.desc()) \
+            .limit(10).all()
+
+        expenses_list = [
+            {
+                "date": e.created_at.strftime("%Y-%m-%d"),
+                "medicine": e.medicine.name,
+                "quantity_added": e.quantity_added,
+                "total_cost": e.total_cost
+            } for e in recent_expenses
+        ]
+
+        # --- 5. Top 10 Prescribed Medicines (this month only) ---
+        top_medicines = (
+            db.session.query(
+                Medicine.name,
+                func.coalesce(func.sum(Prescription.dispensed_units), 0).label("total_units")
+            )
+            .join(Prescription, Prescription.medicine_id == Medicine.id)
+            .filter(Prescription.created_at >= first_day_month)
+            .group_by(Medicine.id)
+            .order_by(func.sum(Prescription.dispensed_units).desc())
+            .limit(10)
+            .all()
+        )
+        top_medicines_list = [{"medicine": m[0], "total_units": int(m[1])} for m in top_medicines]
+
+        # --- 6. Low Stock Medicines (no date filter, always current) ---
+        low_stock_meds = Medicine.query.filter(Medicine.stock < 5).all()
+        low_stock_list = [{"medicine": m.name, "stock": m.stock} for m in low_stock_meds]
+
+        # --- 7. Top 5 Lab & Imaging Tests (this month only) ---
+        top_lab_tests = (
+            db.session.query(TestType.name, func.count(TestRequest.id).label("count"))
+            .join(TestRequest, TestRequest.test_type_id == TestType.id)
+            .filter(TestType.category == "lab", TestRequest.created_at >= first_day_month)
+            .group_by(TestType.id)
+            .order_by(func.count(TestRequest.id).desc())
+            .limit(5)
+            .all()
+        )
+        top_lab_list = [{"test": t[0], "count": t[1]} for t in top_lab_tests]
+
+        top_imaging_tests = (
+            db.session.query(TestType.name, func.count(TestRequest.id).label("count"))
+            .join(TestRequest, TestRequest.test_type_id == TestType.id)
+            .filter(TestType.category == "imaging", TestRequest.created_at >= first_day_month)
+            .group_by(TestType.id)
+            .order_by(func.count(TestRequest.id).desc())
+            .limit(5)
+            .all()
+        )
+        top_imaging_list = [{"test": t[0], "count": t[1]} for t in top_imaging_tests]
+
+        return jsonify({
+        "metrics": {
+            "all_revenue": float(all_revenue),
+            "total_revenue_past_month": float(total_revenue_past_month),
+            "total_pharmacy_sales": float(total_pharmacy_sales),
+            "total_patients": total_patients,
+            "patients_this_month": patients_this_month,
+            "lab_tests_done": lab_tests_done,
+            "imaging_tests_done": imaging_tests_done
+        },
+        "pharmacy_breakdown": pharmacy_breakdown,
+        "recent_expenses": expenses_list,
+        "top_medicines": top_medicines_list,
+        "low_stock_medicines": low_stock_list,
+        "top_lab_tests": top_lab_list,
+        "top_imaging_tests": top_imaging_list
+    })
+
+
+api.add_resource(AdminAnalytics, "/analytics")
+
 
 
 if __name__ == '__main__':
