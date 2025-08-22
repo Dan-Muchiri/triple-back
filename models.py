@@ -802,21 +802,28 @@ class PharmacyExpense(db.Model, SerializerMixin):
     id = db.Column(db.Integer, primary_key=True)
     medicine_id = db.Column(db.Integer, db.ForeignKey("medicines.id"), nullable=False)
     quantity_added = db.Column(db.Integer, nullable=False)
+    discount = db.Column(db.Float, default=0.0)  # discount 
     total_cost = db.Column(db.Float, nullable=False)  # automatically calculated
     created_at = db.Column(db.DateTime, default=datetime.now)
 
     # Relationships
     medicine = db.relationship("Medicine", backref="expenses")
 
-    def __init__(self, medicine, quantity_added):
+    def __init__(self, medicine, quantity_added, discount=0.0):
         self.medicine = medicine
         self.quantity_added = quantity_added
+        self.discount = discount
         self.total_cost = self.calculate_total()
 
     def calculate_total(self):
         if self.medicine and self.quantity_added:
-            return self.medicine.buying_price * self.quantity_added
+            total = self.medicine.buying_price * self.quantity_added
+            # Apply discount as a flat value
+            if self.discount > 0:
+                total -= self.discount
+            return round(max(total, 0.0), 2)  # prevent negative totals
         return 0.0
+
 
     def to_dict(self):
         return {
@@ -825,6 +832,7 @@ class PharmacyExpense(db.Model, SerializerMixin):
             "medicine_name": self.medicine.name if self.medicine else None,
             "quantity_added": self.quantity_added,
             "buying_price": self.medicine.buying_price if self.medicine else None,
+            "discount": self.discount,
             "total_cost": self.total_cost,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
@@ -834,6 +842,13 @@ class PharmacyExpense(db.Model, SerializerMixin):
         if value <= 0:
             raise ValueError("Quantity added must be greater than 0")
         return value
+
+    @validates("discount")
+    def validate_discount(self, key, value):
+        if value < 0:
+            raise ValueError("Discount must be positive")
+        return value
+
 
 
 

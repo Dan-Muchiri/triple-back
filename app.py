@@ -1197,8 +1197,12 @@ class PharmacyExpenses(Resource):
             if quantity <= 0:
                 return {"error": "Quantity added must be greater than 0"}, 400
 
+            discount = float(data.get("discount", 0.0))
+            if discount < 0:
+                return {"error": "Discount must be positive"}, 400
+
             # Create expense
-            expense = PharmacyExpense(medicine=medicine, quantity_added=quantity)
+            expense = PharmacyExpense(medicine=medicine, quantity_added=quantity, discount=discount)
 
             # Update medicine stock
             medicine.stock += quantity
@@ -1233,11 +1237,18 @@ class PharmacyExpenseByID(Resource):
                 if new_quantity <= 0:
                     return {"error": "Quantity must be greater than 0"}, 400
 
-                # Update medicine stock based on quantity difference
                 diff = new_quantity - expense.quantity_added
                 medicine.stock += diff
                 expense.quantity_added = new_quantity
-                expense.total_cost = expense.calculate_total()
+
+            if "discount" in data:
+                new_discount = float(data["discount"])
+                if new_discount < 0:
+                    return {"error": "Discount must be positive"}, 400
+                expense.discount = new_discount
+
+            # Recalculate total cost after any change
+            expense.total_cost = expense.calculate_total()
 
             db.session.commit()
             return expense.to_dict(), 200
@@ -1245,18 +1256,6 @@ class PharmacyExpenseByID(Resource):
         except Exception as e:
             db.session.rollback()
             return {"error": str(e)}, 400
-
-    def delete(self, id):
-        expense = db.session.get(PharmacyExpense, id)
-        if not expense:
-            return {"message": "Pharmacy expense not found"}, 404
-
-        # Restore medicine stock
-        expense.medicine.stock -= expense.quantity_added
-
-        db.session.delete(expense)
-        db.session.commit()
-        return {"message": f"Pharmacy expense {id} deleted"}, 200
 
 
 # ✅ Register the new routes
@@ -1299,7 +1298,7 @@ class AdminAnalytics(Resource):
 
         # --- 3. Pharmacy Sales Breakdown ---
         otc_revenue = db.session.query(func.coalesce(func.sum(Payment.amount), 0)) \
-            .filter(Payment.service_type == "OTC Payment", Payment.created_at >= first_day_month).scalar()
+            .filter(Payment.service_type == "OTC Sale", Payment.created_at >= first_day_month).scalar()
         prescription_revenue = (
             db.session.query(
                 func.coalesce(func.sum(Prescription.dispensed_units * Medicine.selling_price), 0)
@@ -1327,6 +1326,7 @@ class AdminAnalytics(Resource):
                 "date": e.created_at.strftime("%Y-%m-%d"),
                 "medicine": e.medicine.name,
                 "quantity_added": e.quantity_added,
+                "discount":e.discount,
                 "total_cost": e.total_cost
             } for e in recent_expenses
         ]
