@@ -1298,7 +1298,7 @@ class AdminAnalytics(Resource):
 
         # --- 3. Pharmacy Sales Breakdown ---
         otc_revenue = db.session.query(func.coalesce(func.sum(Payment.amount), 0)) \
-            .filter(Payment.service_type == "OTC Sale", Payment.created_at >= first_day_month).scalar()
+            .filter(Payment.service_type == "OTC Payment", Payment.created_at >= first_day_month).scalar()
         prescription_revenue = (
             db.session.query(
                 func.coalesce(func.sum(Prescription.dispensed_units * Medicine.selling_price), 0)
