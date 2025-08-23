@@ -57,9 +57,10 @@ class User(db.Model, SerializerMixin):
     _password_hash = db.Column(db.String, nullable=False)
     role = db.Column(Enum(*roles, name='user_roles'), nullable=False)
     created_at = db.Column(
-        db.DateTime,
-        default=lambda: datetime.now(nairobi_tz)
-    )
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     def __repr__(self):
         return f'<User {self.first_name} {self.last_name} | Email: {self.email}>'
@@ -170,7 +171,11 @@ class Patient(db.Model, SerializerMixin):
     national_id = db.Column(db.String(20), nullable=True)
     phone_number = db.Column(db.String(20), nullable=True)
     email = db.Column(db.String(255), nullable=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     @property
     def age(self):
@@ -246,7 +251,11 @@ class Visit(db.Model, SerializerMixin):
     consultation_id = db.Column(db.Integer, db.ForeignKey('consultations.id'), nullable=True)
 
     stage = db.Column(Enum(*visit_stages, name='visit_stage_enum'), default='reception', nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     # Relationships
     patient = db.relationship('Patient', back_populates='visits')
@@ -340,7 +349,11 @@ class TriageRecord(db.Model, SerializerMixin):
     respiration_rate = db.Column(db.Integer, nullable=True)  # breaths per minute
     notes = db.Column(db.Text, nullable=True)
 
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     @property
     def bmi(self):
@@ -419,7 +432,11 @@ class Consultation(db.Model, SerializerMixin):
     chief_complain = db.Column(db.Text, nullable=True)
     physical_exam = db.Column(db.Text, nullable=True)
     systemic_exam = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     # 👇 new field
     fee = db.Column(db.Float, default=200, nullable=False)
@@ -507,7 +524,11 @@ class TestRequest(db.Model, SerializerMixin):
     results = db.Column(db.Text, nullable=True)
     notes = db.Column(db.Text, nullable=True)
     status = db.Column(Enum('pending', 'completed', name='test_status_enum'), default='pending', nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     # Relationships
     consultation = db.relationship('Consultation', back_populates='test_requests')
@@ -610,7 +631,11 @@ class Prescription(db.Model, SerializerMixin):
 
     dispensed_units = db.Column(db.Integer, default=0, nullable=True)  
 
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     # Relationships
     consultation = db.relationship('Consultation', back_populates='prescriptions')
@@ -669,7 +694,11 @@ class Payment(db.Model, SerializerMixin):
     payment_method = db.Column(Enum(*payment_methods, name='payment_method_enum'), nullable=False)
     mpesa_receipt = db.Column(db.String(100), nullable=True)
 
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     receptionist_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
@@ -722,7 +751,11 @@ class OTCSale(db.Model, SerializerMixin):
 
     id = db.Column(db.Integer, primary_key=True)
     patient_name = db.Column(db.String(100), nullable=False)
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
     stage = db.Column(
         Enum(*otc_stages, name='otc_stage_enum'),
         default='waiting_pharmacy',
@@ -771,7 +804,11 @@ class PharmacySale(db.Model, SerializerMixin):
 
     dispensed_units = db.Column(db.Integer, nullable=False, default=1)
 
-    created_at = db.Column(db.DateTime, default=lambda: datetime.now(nairobi_tz))
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     # Relationships
     otc_sale = db.relationship('OTCSale', back_populates='sales')
@@ -804,7 +841,11 @@ class PharmacyExpense(db.Model, SerializerMixin):
     quantity_added = db.Column(db.Integer, nullable=False)
     discount = db.Column(db.Float, default=0.0)  # discount 
     total_cost = db.Column(db.Float, nullable=False)  # automatically calculated
-    created_at = db.Column(db.DateTime, default=datetime.now)
+    created_at = db.Column(
+    db.DateTime(timezone=True),
+    default=lambda: datetime.now(nairobi_tz)
+)
+
 
     # Relationships
     medicine = db.relationship("Medicine", backref="expenses")
