@@ -1,27 +1,27 @@
-
 #!/bin/bash
 
-# Pull latest changes from Git
+# Set Flask environment
+export FLASK_APP=app.py
+export FLASK_ENV=production
+
+# Pull latest code
 echo "Pulling latest code from Git..."
 git pull origin main
 
-# Install/update dependencies using Pipenv
+# Install/update dependencies
 echo "Installing/updating dependencies..."
 pipenv install --deploy --ignore-pipfile
 
-# Generate migration (without a message)
+# Generate migrations
 echo "Generating migration..."
-pipenv run flask db migrate --autogenerate
+pipenv run flask db migrate -m "Auto migration"
 
-# Run database migrations
+# Apply migrations
 echo "Running migrations..."
 pipenv run flask db upgrade
 
-# Restart the systemd service
+# Restart service
 echo "Restarting triple-back service..."
-sudo systemctl restart triple-back
-
-echo "Deployment complete!"
 sudo systemctl restart triple-back
 
 echo "Deployment complete!"
