@@ -147,6 +147,8 @@ class Patient(db.Model, SerializerMixin):
             'national_id': self.national_id,
             'phone_number': self.phone_number,
             'email': self.email,
+            'next_of_kin_phone': self.next_of_kin_phone,
+            'location': self.location,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'visits': [
                 {
@@ -171,26 +173,28 @@ class Patient(db.Model, SerializerMixin):
     national_id = db.Column(db.String(20), nullable=True)
     phone_number = db.Column(db.String(20), nullable=True)
     email = db.Column(db.String(255), nullable=True)
-    created_at = db.Column(
-    db.DateTime(timezone=True),
-    default=lambda: datetime.now(nairobi_tz)
-)
 
+    # new fields
+    next_of_kin_phone = db.Column(db.String(20), nullable=True)
+    location = db.Column(db.String(255), nullable=True)
+
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(nairobi_tz)
+    )
 
     @property
     def age(self):
         today = datetime.now(nairobi_tz).date()
         return today.year - self.dob.year - ((today.month, today.day) < (self.dob.month, self.dob.day))
 
-
     def __repr__(self):
         return f"<Patient {self.first_name} {self.last_name}>"
-    
+
     # Define relationship
     triage_records = db.relationship('TriageRecord', back_populates='patient', cascade='all, delete-orphan')
     visits = db.relationship('Visit', back_populates='patient', cascade='all, delete-orphan')
     consultations = db.relationship('Consultation', back_populates='patient', cascade='all, delete-orphan')
-
 
     @validates('first_name', 'last_name')
     def validate_name(self, key, name):
@@ -205,7 +209,7 @@ class Patient(db.Model, SerializerMixin):
             if not re.match(email_pattern, email):
                 raise ValueError('Invalid email format')
         return email
-    
+
     @validates('dob')
     def validate_dob(self, key, dob):
         if not dob:
@@ -214,13 +218,11 @@ class Patient(db.Model, SerializerMixin):
         today = datetime.now(nairobi_tz).date()
         if dob >= today:
             raise ValueError("Date of birth must be in the past.")
-
         if dob < datetime(1900, 1, 1).date():
             raise ValueError("Date of birth is too far in the past.")
         
         return dob
 
-    
     @validates('national_id')
     def validate_national_id(self, key, national_id):
         if national_id:
@@ -228,17 +230,21 @@ class Patient(db.Model, SerializerMixin):
                 raise ValueError("National ID must be 6–12 digits")
         return national_id
 
-    @validates('phone_number')
-    def validate_phone_number(self, key, phone_number):
-        if phone_number:
+    @validates('phone_number', 'next_of_kin_phone')
+    def validate_phone_numbers(self, key, number):
+        if number:
             try:
-                parsed_number = phonenumbers.parse(phone_number, "KE")
+                parsed_number = phonenumbers.parse(number, "KE")
                 if not phonenumbers.is_valid_number(parsed_number):
-                    raise ValueError('Invalid Kenyan phone number')
+                    raise ValueError(f'Invalid Kenyan {key.replace("_", " ")}')
             except phonenumbers.phonenumberutil.NumberParseException:
-                raise ValueError('Invalid phone number format. Use "0712345678" or "+254712345678"')
+                raise ValueError(
+                    f'Invalid {key.replace("_", " ")} format. '
+                    'Use "0712345678" or "+254712345678"'
+                )
             return phonenumbers.format_number(parsed_number, phonenumbers.PhoneNumberFormat.E164)
         return None
+
 
     
 class Visit(db.Model, SerializerMixin):
@@ -623,19 +629,21 @@ class Prescription(db.Model, SerializerMixin):
     pharmacist_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
 
     medicine_id = db.Column(db.Integer, db.ForeignKey('medicines.id'), nullable=False)
-    dosage = db.Column(db.String(50), nullable=False)
+    dosage = db.Column(db.String(50), nullable=True)
     instructions = db.Column(db.Text, nullable=True)
 
-    status = db.Column(Enum('pending', 'dispensed', name='prescription_status_enum'),
-                       default='pending', nullable=False)
+    status = db.Column(
+        Enum('pending', 'dispensed', name='prescription_status_enum'),
+        default='pending', nullable=False
+    )
 
-    dispensed_units = db.Column(db.Integer, default=0, nullable=True)  
+    dispensed_units = db.Column(db.Integer, default=0, nullable=True)
+    total_price = db.Column(db.Float, nullable=True)  # <-- now stored manually
 
     created_at = db.Column(
-    db.DateTime(timezone=True),
-    default=lambda: datetime.now(nairobi_tz)
-)
-
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(nairobi_tz)
+    )
 
     # Relationships
     consultation = db.relationship('Consultation', back_populates='prescriptions')
@@ -643,33 +651,26 @@ class Prescription(db.Model, SerializerMixin):
     medicine = db.relationship('Medicine')
 
     def to_dict(self):
-        price = None
-        if self.medicine and self.dispensed_units:
-            price = self.dispensed_units * self.medicine.selling_price
-
         return {
             'id': self.id,
             'consultation_id': self.consultation_id,
             'pharmacist_id': self.pharmacist_id,
             'medicine_id': self.medicine.id if self.medicine else None,
             'medication_name': self.medicine.name if self.medicine else None,
-            'selling_price': self.medicine.selling_price if self.medicine else None,
             'dosage': self.dosage,
             'instructions': self.instructions,
             'status': self.status,
             'dispensed_units': self.dispensed_units,
-            'price': price,  # ✅ new field
+            'total_price': self.total_price,  # pharmacist enters manually
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
-
-
 
     @validates('status')
     def validate_status(self, key, value):
         if value not in ('pending', 'dispensed'):
             raise ValueError(f"Invalid prescription status: {value}")
         return value
-    
+
     @validates('pharmacist_id')
     def validate_pharmacist(self, key, pharmacist_id):
         if pharmacist_id is not None:
@@ -680,7 +681,8 @@ class Prescription(db.Model, SerializerMixin):
                 raise ValueError("User must have the role 'pharmacist'")
         return pharmacist_id
 
-    
+
+
 class Payment(db.Model, SerializerMixin):
     __tablename__ = 'payments'
 
@@ -690,15 +692,14 @@ class Payment(db.Model, SerializerMixin):
     otc_sale_id = db.Column(db.Integer, db.ForeignKey('otc_sales.id'), nullable=True)
 
     amount = db.Column(db.Float, nullable=False)
-    service_type = db.Column(db.String(100), nullable=False)
+    service_type = db.Column(db.Text, nullable=False)  # ✅ Now can store longer messages
     payment_method = db.Column(Enum(*payment_methods, name='payment_method_enum'), nullable=False)
     mpesa_receipt = db.Column(db.String(100), nullable=True)
 
     created_at = db.Column(
-    db.DateTime(timezone=True),
-    default=lambda: datetime.now(nairobi_tz)
-)
-
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(nairobi_tz)
+    )
 
     receptionist_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
 
@@ -706,6 +707,7 @@ class Payment(db.Model, SerializerMixin):
     visit = db.relationship('Visit', backref=db.backref('payments', cascade='all, delete-orphan'))
     otc_sale = db.relationship('OTCSale', backref=db.backref('payments', cascade='all, delete-orphan'))
     receptionist = db.relationship('User', backref='payments_recorded')
+
 
     def __repr__(self):
         return f"<Payment VisitID={self.visit_id} OTCSaleID={self.otc_sale_id} Amount={self.amount} Method={self.payment_method}>"
@@ -803,21 +805,17 @@ class PharmacySale(db.Model, SerializerMixin):
     medicine_id = db.Column(db.Integer, db.ForeignKey('medicines.id'), nullable=False)
 
     dispensed_units = db.Column(db.Integer, nullable=False, default=1)
+    total_price = db.Column(db.Float, nullable=False)  # <-- actual column
 
     created_at = db.Column(
-    db.DateTime(timezone=True),
-    default=lambda: datetime.now(nairobi_tz)
-)
-
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(nairobi_tz)
+    )
 
     # Relationships
     otc_sale = db.relationship('OTCSale', back_populates='sales')
     pharmacist = db.relationship('User', backref='pharmacy_sales')
     medicine = db.relationship('Medicine')
-
-    @property
-    def total_price(self):
-        return (self.medicine.selling_price * self.dispensed_units) if self.medicine else 0
 
     def to_dict(self):
         return {
@@ -829,42 +827,24 @@ class PharmacySale(db.Model, SerializerMixin):
             'medication_name': self.medicine.name if self.medicine else None,
             'selling_price': self.medicine.selling_price if self.medicine else None,
             'dispensed_units': self.dispensed_units,
-            'total_price': self.total_price,
+            'total_price': self.total_price,   # now stored manually
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
-    
+
 class PharmacyExpense(db.Model, SerializerMixin):
     __tablename__ = "pharmacy_expenses"
 
     id = db.Column(db.Integer, primary_key=True)
     medicine_id = db.Column(db.Integer, db.ForeignKey("medicines.id"), nullable=False)
     quantity_added = db.Column(db.Integer, nullable=False)
-    discount = db.Column(db.Float, default=0.0)  # discount 
-    total_cost = db.Column(db.Float, nullable=False)  # automatically calculated
+    total_cost = db.Column(db.Float, nullable=False)  # now provided manually
     created_at = db.Column(
-    db.DateTime(timezone=True),
-    default=lambda: datetime.now(nairobi_tz)
-)
-
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(nairobi_tz)
+    )
 
     # Relationships
     medicine = db.relationship("Medicine", backref="expenses")
-
-    def __init__(self, medicine, quantity_added, discount=0.0):
-        self.medicine = medicine
-        self.quantity_added = quantity_added
-        self.discount = discount
-        self.total_cost = self.calculate_total()
-
-    def calculate_total(self):
-        if self.medicine and self.quantity_added:
-            total = self.medicine.buying_price * self.quantity_added
-            # Apply discount as a flat value
-            if self.discount > 0:
-                total -= self.discount
-            return round(max(total, 0.0), 2)  # prevent negative totals
-        return 0.0
-
 
     def to_dict(self):
         return {
@@ -873,7 +853,6 @@ class PharmacyExpense(db.Model, SerializerMixin):
             "medicine_name": self.medicine.name if self.medicine else None,
             "quantity_added": self.quantity_added,
             "buying_price": self.medicine.buying_price if self.medicine else None,
-            "discount": self.discount,
             "total_cost": self.total_cost,
             "created_at": self.created_at.isoformat() if self.created_at else None,
         }
@@ -884,11 +863,8 @@ class PharmacyExpense(db.Model, SerializerMixin):
             raise ValueError("Quantity added must be greater than 0")
         return value
 
-    @validates("discount")
-    def validate_discount(self, key, value):
-        if value < 0:
-            raise ValueError("Discount must be positive")
-        return value
+
+
 
 
 

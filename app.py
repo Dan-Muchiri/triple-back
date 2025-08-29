@@ -1,6 +1,7 @@
 from flask import Flask, jsonify, request, make_response, session, Response, render_template_string
 from flask_restful import Resource,Api
 import os
+import re
 from dotenv import load_dotenv
 from flask_cors import CORS
 from flask_migrate import Migrate
@@ -12,9 +13,11 @@ from models import db, User, roles, Patient, Visit, TriageRecord, Consultation, 
 from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
-from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
-from flask.views import MethodView
+from reportlab.lib.pagesizes import A4
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+from reportlab.lib import colors
+from reportlab.lib.styles import getSampleStyleSheet
 from sqlalchemy import func
 
 # Load environment variables from .env file
@@ -47,57 +50,76 @@ def generate_receipt(payment_id):
     patient = visit.patient
 
     buffer = BytesIO()
-    pdf = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+
+    styles = getSampleStyleSheet()
+    title_style = styles['Title']
+    normal = styles['Normal']
 
     # Header
-    pdf.setFont("Helvetica-Bold", 16)
-    pdf.drawCentredString(width / 2, height - 50, "TRIPLE T.S. MEDICLINIC")
+    elements.append(Paragraph("TRIPLE T.S. MEDICLINIC", title_style))
+    elements.append(Paragraph("OFFICIAL RECEIPT", styles['Heading2']))
+    elements.append(Spacer(1, 20))
 
-    pdf.setFont("Helvetica", 12)
-    pdf.drawCentredString(width / 2, height - 70, "OFFICIAL RECEIPT")
-
-    # Info
-    y = height - 120
-    line_height = 20
-    pdf.setFont("Helvetica", 11)
-
-    info_lines = [
+    # Patient Info
+    patient_info = [
         f"Patient: {patient.first_name} {patient.last_name}",
         f"National ID: {patient.national_id}",
         f"Visit ID: {visit.id}",
         f"Payment ID: {payment.id}",
-        f"Service: {payment.service_type}",
-        f"Amount Paid: KES {payment.amount}",
         f"Payment Method: {payment.payment_method}",
+        f"Date: {payment.created_at.strftime('%Y-%m-%d %H:%M')}"
     ]
-
     if payment.mpesa_receipt:
-        info_lines.append(f"Mpesa Receipt: {payment.mpesa_receipt}")
+        patient_info.append(f"Mpesa Receipt: {payment.mpesa_receipt}")
 
-    info_lines.append(f"Date: {payment.created_at.strftime('%Y-%m-%d %H:%M')}")
+    for line in patient_info:
+        elements.append(Paragraph(line, normal))
+    elements.append(Spacer(1, 15))
 
-    for line in info_lines:
-        pdf.drawString(70, y, line)
-        y -= line_height
+    # Services Table
+    # Assuming you may extend Payment model to hold multiple services later
+    service_data = [["Service", "Amount (KES)"]]
+    service_data.append([payment.service_type, f"{payment.amount:,.2f}"])
+
+    table = Table(service_data, colWidths=[300, 150])
+    table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
+        ("GRID", (0, 0), (-1, -1), 1, colors.black),
+    ]))
+    elements.append(table)
+    elements.append(Spacer(1, 15))
+
+    # Total
+    elements.append(Paragraph(f"<b>Total Paid: KES {payment.amount:,.2f}</b>", styles['Heading3']))
+    elements.append(Spacer(1, 20))
 
     # Footer
-    y -= 30
-    pdf.setFont("Helvetica-Oblique", 10)
-    pdf.drawCentredString(width / 2, y, "Thank you for your payment.")
-    y -= 15
-    pdf.drawCentredString(width / 2, y, "This is a system-generated receipt from Triple T.S. Mediclinic.")
+    elements.append(Paragraph("Thank you for your payment.", styles['Italic']))
+    elements.append(Paragraph("This is a system-generated receipt from Triple T.S. Mediclinic.", styles['Italic']))
 
-    pdf.showPage()
-    pdf.save()
-
+    # Build PDF
+    doc.build(elements)
     buffer.seek(0)
+
+    first_name = patient.first_name or "Patient"
+    last_name = patient.last_name or ""
+
+    # Remove spaces and special characters
+    safe_first = re.sub(r'[^A-Za-z0-9]+', '_', first_name)
+    safe_last = re.sub(r'[^A-Za-z0-9]+', '_', last_name)
+
+    filename = f"{safe_first}_{safe_last}_receipt_{payment.id}.pdf"
+
     response = make_response(buffer.read())
     response.headers['Content-Type'] = 'application/pdf'
-    response.headers['Content-Disposition'] = f'inline; filename={patient.first_name}_receipt_{payment.id}.pdf'
-
+    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
     return response
-
 
 # Session Resource classes
 class Login(Resource):    
@@ -276,6 +298,8 @@ class Patients(Resource):
                 national_id=data.get('national_id'),
                 phone_number=data.get('phone_number'),
                 email=data.get('email'),
+                next_of_kin_phone=data.get('next_of_kin_phone'),
+                location=data.get('location')
             )
 
             db.session.add(new_patient)
@@ -286,6 +310,7 @@ class Patients(Resource):
         except Exception as e:
             db.session.rollback()
             return {'error': str(e)}, 400
+
 
 class PatientByID(Resource):
     def get(self, id):
@@ -309,7 +334,8 @@ class PatientByID(Resource):
 
         try:
             for key, value in data.items():
-                setattr(patient, key, value)
+                if hasattr(patient, key):
+                    setattr(patient, key, value)
 
             db.session.commit()
             return make_response(jsonify(patient.to_dict()), 200)
@@ -325,6 +351,7 @@ class PatientByID(Resource):
 
 api.add_resource(Patients, '/patients')
 api.add_resource(PatientByID, '/patients/<int:id>')
+
 
 # VISIT MANAGEMENT ROUTES
 class Visits(Resource):
@@ -810,9 +837,20 @@ class MedicineByID(Resource):
         if not medicine:
             return {'message': 'Medicine not found'}, 404
 
-        db.session.delete(medicine)
-        db.session.commit()
-        return {'message': f'Medicine {id} deleted'}, 200
+        # ✅ Check if medicine is linked to any expenses
+        if medicine.expenses and len(medicine.expenses) > 0:
+            return {
+                'message': 'You cannot delete this medicine because it has related expenses.'
+            }, 400
+
+        try:
+            db.session.delete(medicine)
+            db.session.commit()
+            return {'message': f'Medicine {id} deleted successfully'}, 200
+        except Exception as e:
+            db.session.rollback()
+            return {'error': str(e)}, 400
+
 
 
 # ✅ Register routes
@@ -1076,7 +1114,7 @@ class PharmacySales(Resource):
     def post(self):
         data = request.get_json()
         try:
-            required_fields = ["otc_sale_id", "pharmacist_id", "medicine_id", "dispensed_units"]
+            required_fields = ["otc_sale_id", "pharmacist_id", "medicine_id", "dispensed_units", "total_price"]
             for field in required_fields:
                 if field not in data:
                     return {"error": f"{field} is required"}, 400
@@ -1086,7 +1124,10 @@ class PharmacySales(Resource):
             if not medicine:
                 return {"error": "Medicine not found"}, 404
 
-            dispensed_units = int(data.get("dispensed_units", 1))
+            dispensed_units = int(data["dispensed_units"])
+
+            if dispensed_units <= 0:
+                return {"error": "Dispensed units must be greater than 0"}, 400
 
             # Update stock + sold units
             if medicine.stock < dispensed_units:
@@ -1100,6 +1141,7 @@ class PharmacySales(Resource):
                 pharmacist_id=data["pharmacist_id"],
                 medicine_id=data["medicine_id"],
                 dispensed_units=dispensed_units,
+                total_price=float(data["total_price"])  # now provided manually
             )
 
             db.session.add(sale)
@@ -1138,10 +1180,21 @@ class PharmacySaleByID(Resource):
 
                 med.stock -= diff
                 med.sold_units = (med.sold_units or 0) + diff
+                sale.dispensed_units = new_units
 
-            # Apply updates
-            for key, value in data.items():
-                setattr(sale, key, value)
+            # Allow manual update of total_price
+            if "total_price" in data:
+                sale.total_price = float(data["total_price"])
+
+            # Other fields
+            if "pharmacist_id" in data:
+                sale.pharmacist_id = data["pharmacist_id"]
+
+            if "medicine_id" in data:
+                med = db.session.get(Medicine, data["medicine_id"])
+                if not med:
+                    return {"error": "Medicine not found"}, 404
+                sale.medicine_id = med.id
 
             db.session.commit()
             return sale.to_dict(), 200
@@ -1165,6 +1218,7 @@ class PharmacySaleByID(Resource):
         return {"message": f"Pharmacy sale {id} deleted"}, 200
 
 
+
 # Register routes
 api.add_resource(OTCSales, "/otc_sales")
 api.add_resource(OTCSaleByID, "/otc_sales/<int:id>")
@@ -1184,7 +1238,7 @@ class PharmacyExpenses(Resource):
         """Add a new pharmacy expense and update medicine stock"""
         data = request.get_json()
         try:
-            required_fields = ["medicine_id", "quantity_added"]
+            required_fields = ["medicine_id", "quantity_added", "total_cost"]
             for field in required_fields:
                 if field not in data:
                     return {"error": f"{field} is required"}, 400
@@ -1197,12 +1251,16 @@ class PharmacyExpenses(Resource):
             if quantity <= 0:
                 return {"error": "Quantity added must be greater than 0"}, 400
 
-            discount = float(data.get("discount", 0.0))
-            if discount < 0:
-                return {"error": "Discount must be positive"}, 400
+            total_cost = float(data["total_cost"])
+            if total_cost < 0:
+                return {"error": "Total cost must be non-negative"}, 400
 
-            # Create expense
-            expense = PharmacyExpense(medicine=medicine, quantity_added=quantity, discount=discount)
+            # Create expense (manual total_cost)
+            expense = PharmacyExpense(
+                medicine=medicine,
+                quantity_added=quantity,
+                total_cost=total_cost
+            )
 
             # Update medicine stock
             medicine.stock += quantity
@@ -1241,14 +1299,11 @@ class PharmacyExpenseByID(Resource):
                 medicine.stock += diff
                 expense.quantity_added = new_quantity
 
-            if "discount" in data:
-                new_discount = float(data["discount"])
-                if new_discount < 0:
-                    return {"error": "Discount must be positive"}, 400
-                expense.discount = new_discount
-
-            # Recalculate total cost after any change
-            expense.total_cost = expense.calculate_total()
+            if "total_cost" in data:
+                new_total = float(data["total_cost"])
+                if new_total < 0:
+                    return {"error": "Total cost must be non-negative"}, 400
+                expense.total_cost = new_total
 
             db.session.commit()
             return expense.to_dict(), 200
@@ -1261,6 +1316,7 @@ class PharmacyExpenseByID(Resource):
 # ✅ Register the new routes
 api.add_resource(PharmacyExpenses, "/pharmacy_expenses")
 api.add_resource(PharmacyExpenseByID, "/pharmacy_expenses/<int:id>")
+
 
 class AdminAnalytics(Resource):
     def get(self):
@@ -1322,14 +1378,14 @@ class AdminAnalytics(Resource):
             .limit(10).all()
 
         expenses_list = [
-            {
-                "date": e.created_at.strftime("%Y-%m-%d"),
-                "medicine": e.medicine.name,
-                "quantity_added": e.quantity_added,
-                "discount":e.discount,
-                "total_cost": e.total_cost
-            } for e in recent_expenses
-        ]
+                {
+                    "date": e.created_at.strftime("%Y-%m-%d"),
+                    "medicine": e.medicine.name,
+                    "quantity_added": e.quantity_added,
+                    "total_cost": e.total_cost
+                } for e in recent_expenses
+            ]
+
 
         # --- 5. Top 10 Prescribed Medicines (this month only) ---
         top_medicines = (
@@ -1393,6 +1449,44 @@ class AdminAnalytics(Resource):
 
 
 api.add_resource(AdminAnalytics, "/analytics")
+
+@app.route('/pharmacy_all_sales', methods=['GET'])
+def get_all_sales():
+    # fetch prescriptions
+    prescriptions = Prescription.query.all()
+    otc_sales = PharmacySale.query.all()
+
+    data = []
+
+    # map prescriptions
+    for p in prescriptions:
+        data.append({
+            "id": f"presc-{p.id}",
+            "medicine": p.medicine.name if p.medicine else None,
+            "buying_price": p.medicine.buying_price if p.medicine else None,
+            "quantity": p.dispensed_units,
+            "total": p.total_price,
+            "type": "Prescription",
+            "created_at": p.created_at.isoformat() if p.created_at else None
+        })
+
+    # map otc sales
+    for s in otc_sales:
+        data.append({
+            "id": f"otc-{s.id}",
+            "medicine": s.medicine.name if s.medicine else None,
+            "buying_price": s.medicine.buying_price if s.medicine else None,
+            "quantity": s.dispensed_units,
+            "total": s.total_price,
+            "type": "OTC",
+            "created_at": s.created_at.isoformat() if s.created_at else None
+        })
+
+    # sort by created_at desc
+    data.sort(key=lambda x: x["created_at"], reverse=True)
+
+    return jsonify(data), 200
+
 
 
 
