@@ -880,6 +880,7 @@ class Prescriptions(Resource):
                 return {'error': "Medicine not found"}, 404
 
             dispensed_units = data.get('dispensed_units', 0)
+            total_price = data.get('total_price', 0)
 
             prescription = Prescription(
                 consultation_id=data['consultation_id'],
@@ -888,7 +889,8 @@ class Prescriptions(Resource):
                 dosage=data['dosage'],
                 instructions=data.get('instructions'),
                 status=data.get('status', 'pending'),
-                dispensed_units=dispensed_units
+                dispensed_units=dispensed_units,
+                total_price = total_price
             )
 
             # Update medicine sold_units and stock if dispensed
