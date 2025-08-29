@@ -33,7 +33,7 @@ def upgrade():
 
     with op.batch_alter_table('pharmacy_sales', schema=None) as batch_op:
         batch_op.add_column(sa.Column('total_price', sa.Float(), nullable=True))
-    op.execute("UPDATE pharmacy_sales SET total_price = quantity * selling_price")
+    op.execute("UPDATE pharmacy_sales SET total_price = dispensed_units * selling_price")
     with op.batch_alter_table('pharmacy_sales', schema=None) as batch_op:
         batch_op.alter_column('total_price', nullable=False)
 
