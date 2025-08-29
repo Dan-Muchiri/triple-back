@@ -32,20 +32,19 @@ def upgrade():
         batch_op.drop_column('discount')
 
     with op.batch_alter_table('pharmacy_sales', schema=None) as batch_op:
-        op.add_column('pharmacy_sales', sa.Column('total_price', sa.Float(), nullable=True))
+        batch_op.add_column(sa.Column('total_price', sa.Float(), nullable=True))
     op.execute("UPDATE pharmacy_sales SET total_price = quantity * selling_price")
-    op.alter_column('pharmacy_sales', 'total_price', nullable=False)
-
+    with op.batch_alter_table('pharmacy_sales', schema=None) as batch_op:
+        batch_op.alter_column('total_price', nullable=False)
 
     with op.batch_alter_table('prescriptions', schema=None) as batch_op:
-        op.add_column('prescriptions',sa.Column('total_price', sa.Float(), nullable=True))
+        batch_op.add_column(sa.Column('total_price', sa.Float(), nullable=True))
     op.execute("UPDATE prescriptions SET total_price = dispensed_units * selling_price")
-        op.alter_column('prescriptions', 'total_price', nullable=False)
-
+    with op.batch_alter_table('prescriptions', schema=None) as batch_op:
+        batch_op.alter_column('total_price', nullable=False)
         batch_op.alter_column('dosage',
                existing_type=sa.VARCHAR(length=50),
                nullable=True)
-
     # ### end Alembic commands ###
 
 
@@ -72,5 +71,4 @@ def downgrade():
     with op.batch_alter_table('patients', schema=None) as batch_op:
         batch_op.drop_column('location')
         batch_op.drop_column('next_of_kin_phone')
-
     # ### end Alembic commands ###
