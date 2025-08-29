@@ -880,7 +880,6 @@ class Prescriptions(Resource):
                 return {'error': "Medicine not found"}, 404
 
             dispensed_units = data.get('dispensed_units', 0)
-            total_price = data.get('total_price', 0)
 
             prescription = Prescription(
                 consultation_id=data['consultation_id'],
@@ -889,8 +888,7 @@ class Prescriptions(Resource):
                 dosage=data['dosage'],
                 instructions=data.get('instructions'),
                 status=data.get('status', 'pending'),
-                dispensed_units=dispensed_units,
-                total_price = total_price
+                dispensed_units=dispensed_units
             )
 
             # Update medicine sold_units and stock if dispensed
@@ -1355,8 +1353,13 @@ class AdminAnalytics(Resource):
         )
 
         # --- 3. Pharmacy Sales Breakdown ---
-        otc_revenue = db.session.query(func.coalesce(func.sum(Payment.amount), 0)) \
-            .filter(Payment.service_type == "OTC Payment", Payment.created_at >= first_day_month).scalar()
+        otc_revenue = (
+            db.session.query(func.coalesce(func.sum(PharmacySale.total_price), 0))
+            .join(OTCSale, OTCSale.id == PharmacySale.otc_sale_id)
+            .filter(PharmacySale.created_at >= first_day_month)
+            .scalar()
+        )
+
         prescription_revenue = (
             db.session.query(
                 func.coalesce(func.sum(Prescription.dispensed_units * Medicine.selling_price), 0)
@@ -1365,28 +1368,37 @@ class AdminAnalytics(Resource):
             .filter(Prescription.created_at >= first_day_month)
             .scalar()
         )
-
-        pharmacy_breakdown = {
-            "Over The Counter": float(otc_revenue),
-            "Prescription": float(prescription_revenue)
-        }
         # ✅ Now calculate total from breakdown
         total_pharmacy_sales = float(otc_revenue) + float(prescription_revenue)
 
-        # --- 4. Pharmacy Expenses (this month only) ---
-        recent_expenses = PharmacyExpense.query \
-            .filter(PharmacyExpense.created_at >= first_day_month) \
-            .order_by(PharmacyExpense.created_at.desc()) \
-            .limit(10).all()
+        # --- Lab & Imaging Revenue ---
+        lab_revenue = (
+            db.session.query(func.coalesce(func.sum(TestType.price), 0))
+            .join(TestRequest, TestRequest.test_type_id == TestType.id)
+            .filter(
+                TestType.category == "lab",
+                TestRequest.created_at >= first_day_month
+            )
+            .scalar()
+        )
 
-        expenses_list = [
-                {
-                    "date": e.created_at.strftime("%Y-%m-%d"),
-                    "medicine": e.medicine.name,
-                    "quantity_added": e.quantity_added,
-                    "total_cost": e.total_cost
-                } for e in recent_expenses
-            ]
+        imaging_revenue = (
+            db.session.query(func.coalesce(func.sum(TestType.price), 0))
+            .join(TestRequest, TestRequest.test_type_id == TestType.id)
+            .filter(
+                TestType.category == "imaging",
+                TestRequest.created_at >= first_day_month
+            )
+            .scalar()
+        )
+
+        # --- Consultation Revenue (this month) ---
+        consultation_revenue = (
+            db.session.query(func.coalesce(func.sum(Consultation.fee), 0))
+            .filter(Consultation.created_at >= first_day_month)
+            .scalar()
+        )
+
 
 
         # --- 5. Top 10 Prescribed Medicines (this month only) ---
@@ -1403,10 +1415,6 @@ class AdminAnalytics(Resource):
             .all()
         )
         top_medicines_list = [{"medicine": m[0], "total_units": int(m[1])} for m in top_medicines]
-
-        # --- 6. Low Stock Medicines (no date filter, always current) ---
-        low_stock_meds = Medicine.query.filter(Medicine.stock < 5).all()
-        low_stock_list = [{"medicine": m.name, "stock": m.stock} for m in low_stock_meds]
 
         # --- 7. Top 5 Lab & Imaging Tests (this month only) ---
         top_lab_tests = (
@@ -1435,19 +1443,24 @@ class AdminAnalytics(Resource):
         "metrics": {
             "all_revenue": float(all_revenue),
             "total_revenue_past_month": float(total_revenue_past_month),
-            "total_pharmacy_sales": float(total_pharmacy_sales),
+            "pharmacy_sales_this_month": float(total_pharmacy_sales),   # renamed
+            "lab_sales_this_month": float(lab_revenue),
+            "imaging_sales_this_month": float(imaging_revenue),
+            "consultation_revenue_this_month": float(consultation_revenue),
             "total_patients": total_patients,
             "patients_this_month": patients_this_month,
-            "lab_tests_done": lab_tests_done,
-            "imaging_tests_done": imaging_tests_done
+            "lab_tests_done_this_month": lab_tests_done,          # (optional consistency)
+            "imaging_tests_done_this_month": imaging_tests_done   # (optional consistency)
         },
-        "pharmacy_breakdown": pharmacy_breakdown,
-        "recent_expenses": expenses_list,
-        "top_medicines": top_medicines_list,
-        "low_stock_medicines": low_stock_list,
-        "top_lab_tests": top_lab_list,
-        "top_imaging_tests": top_imaging_list
+        "pharmacy_breakdown_this_month": {   # renamed for clarity
+            "Over The Counter": float(otc_revenue),
+            "Prescription": float(prescription_revenue)
+        },
+        "top_medicines_this_month": top_medicines_list,
+        "top_lab_tests_this_month": top_lab_list,
+        "top_imaging_tests_this_month": top_imaging_list
     })
+
 
 
 api.add_resource(AdminAnalytics, "/analytics")
