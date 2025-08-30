@@ -1,4 +1,4 @@
-from flask import Flask, jsonify, request, make_response, session, Response, render_template_string
+from flask import Flask, jsonify, request, make_response, session, abort
 from flask_restful import Resource,Api
 import os
 import re
@@ -46,8 +46,6 @@ app.secret_key = os.environ.get('SECRET_KEY', 'fallback_secret')
 @app.route('/receipt/<int:payment_id>', methods=['GET'])
 def generate_receipt(payment_id):
     payment = Payment.query.get_or_404(payment_id)
-    visit = payment.visit
-    patient = visit.patient
 
     buffer = BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4)
@@ -62,32 +60,93 @@ def generate_receipt(payment_id):
     elements.append(Paragraph("OFFICIAL RECEIPT", styles['Heading2']))
     elements.append(Spacer(1, 20))
 
-    # Patient Info
-    patient_info = [
-        f"Patient: {patient.first_name} {patient.last_name}",
-        f"National ID: {patient.national_id}",
-        f"Visit ID: {visit.id}",
-        f"Payment ID: {payment.id}",
-        f"Payment Method: {payment.payment_method}",
-        f"Date: {payment.created_at.strftime('%Y-%m-%d %H:%M')}"
-    ]
-    if payment.mpesa_receipt:
-        patient_info.append(f"Mpesa Receipt: {payment.mpesa_receipt}")
+    # --- Case 1: Visit Payment ---
+    if payment.visit:
+        visit = payment.visit
+        patient = visit.patient
 
-    for line in patient_info:
-        elements.append(Paragraph(line, normal))
-    elements.append(Spacer(1, 15))
+        patient_info = [
+            f"Patient: {patient.first_name} {patient.last_name}",
+            f"National ID: {patient.national_id}",
+            f"Visit ID: {visit.id}",
+            f"Payment ID: {payment.id}",
+            f"Payment Method: {payment.payment_method}",
+            f"Date: {payment.created_at.strftime('%Y-%m-%d %H:%M')}"
+        ]
+        if payment.mpesa_receipt:
+            patient_info.append(f"Mpesa Receipt: {payment.mpesa_receipt}")
 
-    # Services Table
-    # Assuming you may extend Payment model to hold multiple services later
-    service_data = [["Service", "Amount (KES)"]]
-    service_data.append([payment.service_type, f"{payment.amount:,.2f}"])
+        for line in patient_info:
+            elements.append(Paragraph(line, normal))
+        elements.append(Spacer(1, 15))
 
-    table = Table(service_data, colWidths=[300, 150])
+        # Services Table (accurate from visit)
+        service_data = [["Service", "Amount (KES)"]]
+
+        # Consultation fee
+        if visit.consultation:
+            service_data.append(["Consultation", f"{visit.consultation.fee:,.2f}"])
+
+            # Prescriptions
+            for p in visit.consultation.prescriptions:
+                med_name = p.medicine.name if p.medicine else "Unknown"
+                qty = p.dispensed_units or 0
+                price = p.total_price or (qty * (p.medicine.selling_price if p.medicine else 0))
+                service_data.append([f"Prescription: {med_name} x {qty}", f"{price:,.2f}"])
+
+            # Test requests
+            for tr in visit.consultation.test_requests:
+                service_data.append([f"Test: {tr.test_type.name}", f"{tr.amount:,.2f}"])
+
+        # Direct test requests (not linked to consultation)
+        for tr in visit.test_requests:
+            service_data.append([f"Test: {tr.test_type.name}", f"{tr.amount:,.2f}"])
+
+        total_charges = visit.total_charges
+        col_widths = [300, 150]  # 2-column layout for visit
+
+    # --- Case 2: OTC Payment ---
+    elif payment.otc_sale:
+        otc_sale = payment.otc_sale
+
+        otc_info = [
+            f"Customer: {otc_sale.patient_name}",
+            f"OTC Sale ID: {otc_sale.id}",
+            f"Payment ID: {payment.id}",
+            f"Payment Method: {payment.payment_method}",
+            f"Date: {payment.created_at.strftime('%Y-%m-%d %H:%M')}"
+        ]
+        if payment.mpesa_receipt:
+            otc_info.append(f"Mpesa Receipt: {payment.mpesa_receipt}")
+
+        for line in otc_info:
+            elements.append(Paragraph(line, normal))
+        elements.append(Spacer(1, 15))
+
+        # OTC Sales Table
+        service_data = [["Medicine", "Qty", "Unit Price (KES)", "Total (KES)"]]
+        for sale in otc_sale.sales:
+            med_name = sale.medicine.name if sale.medicine else "N/A"
+            service_data.append([
+                Paragraph(med_name, normal),  # wrapped medicine name
+                sale.dispensed_units,
+                f"{sale.medicine.selling_price:,.2f}" if sale.medicine else "0.00",
+                f"{sale.total_price:,.2f}"
+            ])
+
+        total_charges = otc_sale.total_price
+        col_widths = [200, 50, 100, 100]  # 4-column layout for OTC
+
+    else:
+        abort(400, "Payment not linked to a Visit or OTC Sale")
+
+    # Build the table
+    table = Table(service_data, colWidths=col_widths)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("ALIGN", (1, 1), (-1, -1), "CENTER"),  # left align first column, center numbers
+        ("ALIGN", (0, 0), (0, -1), "LEFT"),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
         ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
         ("GRID", (0, 0), (-1, -1), 1, colors.black),
@@ -95,8 +154,19 @@ def generate_receipt(payment_id):
     elements.append(table)
     elements.append(Spacer(1, 15))
 
-    # Total
-    elements.append(Paragraph(f"<b>Total Paid: KES {payment.amount:,.2f}</b>", styles['Heading3']))
+    # Totals
+    elements.append(Paragraph(f"<b>Total Charges: KES {total_charges:,.2f}</b>", styles['Heading3']))
+    elements.append(Paragraph(f"<b>Paid Now: KES {payment.amount:,.2f}</b>", styles['Heading3']))
+
+    # If part payment, show balance
+    if payment.visit:
+        balance = visit.balance
+    elif payment.otc_sale:
+        balance = otc_sale.balance
+    else:
+        balance = 0
+
+    elements.append(Paragraph(f"<b>Balance: KES {balance:,.2f}</b>", styles['Heading3']))
     elements.append(Spacer(1, 20))
 
     # Footer
@@ -107,10 +177,16 @@ def generate_receipt(payment_id):
     doc.build(elements)
     buffer.seek(0)
 
-    first_name = patient.first_name or "Patient"
-    last_name = patient.last_name or ""
+    # Filename safe generation
+    if payment.visit:
+        first_name = payment.visit.patient.first_name or "Patient"
+        last_name = payment.visit.patient.last_name or ""
+    elif payment.otc_sale:
+        first_name = payment.otc_sale.patient_name or "Customer"
+        last_name = ""
+    else:
+        first_name, last_name = "Unknown", ""
 
-    # Remove spaces and special characters
     safe_first = re.sub(r'[^A-Za-z0-9]+', '_', first_name)
     safe_last = re.sub(r'[^A-Za-z0-9]+', '_', last_name)
 
@@ -120,6 +196,8 @@ def generate_receipt(payment_id):
     response.headers['Content-Type'] = 'application/pdf'
     response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
     return response
+
+
 
 # Session Resource classes
 class Login(Resource):    
@@ -1352,69 +1430,50 @@ class AdminAnalytics(Resource):
             .scalar()
         )
 
-        # --- 3. Pharmacy Sales Breakdown ---
-        otc_revenue = (
-            db.session.query(func.coalesce(func.sum(PharmacySale.total_price), 0))
-            .join(OTCSale, OTCSale.id == PharmacySale.otc_sale_id)
-            .filter(PharmacySale.created_at >= first_day_month)
-            .scalar()
-        )
 
-        prescription_revenue = (
+        # --- 5. Top 10 Medicines (Prescriptions + OTC Sales, this month only) ---
+        # --- 5. Top 10 Medicines (Prescriptions + OTC Sales, this month only) ---
+        prescription_query = (
             db.session.query(
-                func.coalesce(func.sum(Prescription.dispensed_units * Medicine.selling_price), 0)
-            )
-            .join(Medicine, Prescription.medicine_id == Medicine.id)
-            .filter(Prescription.created_at >= first_day_month)
-            .scalar()
-        )
-        # ✅ Now calculate total from breakdown
-        total_pharmacy_sales = float(otc_revenue) + float(prescription_revenue)
-
-        # --- Lab & Imaging Revenue ---
-        lab_revenue = (
-            db.session.query(func.coalesce(func.sum(TestType.price), 0))
-            .join(TestRequest, TestRequest.test_type_id == TestType.id)
-            .filter(
-                TestType.category == "lab",
-                TestRequest.created_at >= first_day_month
-            )
-            .scalar()
-        )
-
-        imaging_revenue = (
-            db.session.query(func.coalesce(func.sum(TestType.price), 0))
-            .join(TestRequest, TestRequest.test_type_id == TestType.id)
-            .filter(
-                TestType.category == "imaging",
-                TestRequest.created_at >= first_day_month
-            )
-            .scalar()
-        )
-
-        # --- Consultation Revenue (this month) ---
-        consultation_revenue = (
-            db.session.query(func.coalesce(func.sum(Consultation.fee), 0))
-            .filter(Consultation.created_at >= first_day_month)
-            .scalar()
-        )
-
-
-
-        # --- 5. Top 10 Prescribed Medicines (this month only) ---
-        top_medicines = (
-            db.session.query(
-                Medicine.name,
+                Medicine.name.label("medicine_name"),
                 func.coalesce(func.sum(Prescription.dispensed_units), 0).label("total_units")
             )
             .join(Prescription, Prescription.medicine_id == Medicine.id)
             .filter(Prescription.created_at >= first_day_month)
             .group_by(Medicine.id)
-            .order_by(func.sum(Prescription.dispensed_units).desc())
+        )
+
+        pharmacy_query = (
+            db.session.query(
+                Medicine.name.label("medicine_name"),
+                func.coalesce(func.sum(PharmacySale.dispensed_units), 0).label("total_units")
+            )
+            .join(PharmacySale, PharmacySale.medicine_id == Medicine.id)
+            .filter(PharmacySale.created_at >= first_day_month)
+            .group_by(Medicine.id)
+        )
+
+        # Combine with union
+        union_q = prescription_query.union_all(pharmacy_query).subquery()
+
+        # Aggregate again so same medicine merges
+        combined_top = (
+            db.session.query(
+                union_q.c.medicine_name,
+                func.sum(union_q.c.total_units).label("total_units")
+            )
+            .group_by(union_q.c.medicine_name)
+            .order_by(func.sum(union_q.c.total_units).desc())
             .limit(10)
             .all()
         )
-        top_medicines_list = [{"medicine": m[0], "total_units": int(m[1])} for m in top_medicines]
+
+        top_medicines_list = [
+            {"medicine": row.medicine_name, "total_units": int(row.total_units)}
+            for row in combined_top
+        ]
+
+
 
         # --- 7. Top 5 Lab & Imaging Tests (this month only) ---
         top_lab_tests = (
@@ -1423,7 +1482,7 @@ class AdminAnalytics(Resource):
             .filter(TestType.category == "lab", TestRequest.created_at >= first_day_month)
             .group_by(TestType.id)
             .order_by(func.count(TestRequest.id).desc())
-            .limit(5)
+            .limit(10)
             .all()
         )
         top_lab_list = [{"test": t[0], "count": t[1]} for t in top_lab_tests]
@@ -1434,7 +1493,7 @@ class AdminAnalytics(Resource):
             .filter(TestType.category == "imaging", TestRequest.created_at >= first_day_month)
             .group_by(TestType.id)
             .order_by(func.count(TestRequest.id).desc())
-            .limit(5)
+            .limit(10)
             .all()
         )
         top_imaging_list = [{"test": t[0], "count": t[1]} for t in top_imaging_tests]
@@ -1443,18 +1502,10 @@ class AdminAnalytics(Resource):
         "metrics": {
             "all_revenue": float(all_revenue),
             "total_revenue_past_month": float(total_revenue_past_month),
-            "pharmacy_sales_this_month": float(total_pharmacy_sales),   # renamed
-            "lab_sales_this_month": float(lab_revenue),
-            "imaging_sales_this_month": float(imaging_revenue),
-            "consultation_revenue_this_month": float(consultation_revenue),
             "total_patients": total_patients,
             "patients_this_month": patients_this_month,
             "lab_tests_done_this_month": lab_tests_done,          # (optional consistency)
             "imaging_tests_done_this_month": imaging_tests_done   # (optional consistency)
-        },
-        "pharmacy_breakdown_this_month": {   # renamed for clarity
-            "Over The Counter": float(otc_revenue),
-            "Prescription": float(prescription_revenue)
         },
         "top_medicines_this_month": top_medicines_list,
         "top_lab_tests_this_month": top_lab_list,
@@ -1467,40 +1518,55 @@ api.add_resource(AdminAnalytics, "/analytics")
 
 @app.route('/pharmacy_all_sales', methods=['GET'])
 def get_all_sales():
-    # fetch prescriptions
-    prescriptions = Prescription.query.all()
-    otc_sales = PharmacySale.query.all()
-
     data = []
 
-    # map prescriptions
+    # Fetch all prescriptions with their visits
+    prescriptions = (
+        db.session.query(Prescription)
+        .join(Prescription.consultation)
+        .join(Consultation.visit)
+        .all()
+    )
+
+    # Filter in Python: only fully paid visits
     for p in prescriptions:
-        data.append({
-            "id": f"presc-{p.id}",
-            "medicine": p.medicine.name if p.medicine else None,
-            "buying_price": p.medicine.buying_price if p.medicine else None,
-            "quantity": p.dispensed_units,
-            "total": p.total_price,
-            "type": "Prescription",
-            "created_at": p.created_at.isoformat() if p.created_at else None
-        })
+        if p.consultation and p.consultation.visit and p.consultation.visit.balance == 0:
+            data.append({
+                "id": f"presc-{p.id}",
+                "medicine": p.medicine.name if p.medicine else None,
+                "buying_price": p.medicine.buying_price if p.medicine else None,
+                "quantity": p.dispensed_units,
+                "total": p.total_price,
+                "type": "Prescription",
+                "created_at": p.created_at.isoformat() if p.created_at else None
+            })
 
-    # map otc sales
+    # Fetch all OTC sales with their parent
+    otc_sales = (
+        db.session.query(PharmacySale)
+        .join(PharmacySale.otc_sale)
+        .all()
+    )
+
+    # Filter in Python: only fully paid OTC sales
     for s in otc_sales:
-        data.append({
-            "id": f"otc-{s.id}",
-            "medicine": s.medicine.name if s.medicine else None,
-            "buying_price": s.medicine.buying_price if s.medicine else None,
-            "quantity": s.dispensed_units,
-            "total": s.total_price,
-            "type": "OTC",
-            "created_at": s.created_at.isoformat() if s.created_at else None
-        })
+        if s.otc_sale and s.otc_sale.balance == 0:
+            data.append({
+                "id": f"otc-{s.id}",
+                "medicine": s.medicine.name if s.medicine else None,
+                "buying_price": s.medicine.buying_price if s.medicine else None,
+                "quantity": s.dispensed_units,
+                "total": s.total_price,
+                "type": "OTC",
+                "created_at": s.created_at.isoformat() if s.created_at else None
+            })
 
-    # sort by created_at desc
+    # Sort by date DESC
     data.sort(key=lambda x: x["created_at"], reverse=True)
 
     return jsonify(data), 200
+
+
 
 
 

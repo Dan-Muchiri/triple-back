@@ -278,7 +278,6 @@ class Visit(db.Model, SerializerMixin):
     def total_charges(self):
         consultation_total = self.consultation.fee if self.consultation else 0
 
-        # 👇 Add both direct & consultation-based test requests
         test_total = sum(tr.amount for tr in self.test_requests)  
         if self.consultation:
             test_total += sum(tr.amount for tr in self.consultation.test_requests)
@@ -286,7 +285,7 @@ class Visit(db.Model, SerializerMixin):
         prescription_total = 0
         if self.consultation:
             prescription_total = sum(
-                (p.dispensed_units or 0) * (p.medicine.selling_price if p.medicine else 0)
+                p.total_price or 0
                 for p in self.consultation.prescriptions
             )
 
