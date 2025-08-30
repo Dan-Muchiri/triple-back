@@ -147,6 +147,7 @@ class Patient(db.Model, SerializerMixin):
             'national_id': self.national_id,
             'phone_number': self.phone_number,
             'email': self.email,
+            'next_of_kin_name': self.next_of_kin_name,   # ✅ added
             'next_of_kin_phone': self.next_of_kin_phone,
             'location': self.location,
             'created_at': self.created_at.isoformat() if self.created_at else None,
@@ -165,6 +166,7 @@ class Patient(db.Model, SerializerMixin):
             ]
         }
 
+
     id = db.Column(db.Integer, primary_key=True)
     first_name = db.Column(db.String(50), nullable=False)
     last_name = db.Column(db.String(50), nullable=False)
@@ -175,6 +177,7 @@ class Patient(db.Model, SerializerMixin):
     email = db.Column(db.String(255), nullable=True)
 
     # new fields
+    next_of_kin_name = db.Column(db.String(100), nullable=True)
     next_of_kin_phone = db.Column(db.String(20), nullable=True)
     location = db.Column(db.String(255), nullable=True)
 
