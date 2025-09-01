@@ -38,14 +38,17 @@ class User(db.Model, SerializerMixin):
 
     def to_dict(self):
         return {
-            'id': self.id,
-            'first_name': self.first_name,
-            'last_name': self.last_name,
-            'email': self.email,
-            'national_id': self.national_id,
-            'phone_number': self.phone_number,
-            'role': self.role,
-            'created_at': self.created_at.isoformat() if self.created_at else None
+            "id": self.id,
+            "first_name": self.first_name,
+            "last_name": self.last_name,
+            "email": self.email,
+            "national_id": self.national_id,
+            "phone_number": self.phone_number,
+            "role": self.role,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "leave_days_this_year": self.leave_days_this_year,
+            "active_leave": any(leave.is_active for leave in self.leave_offs),
+            "leave_offs": [leave.to_dict() for leave in self.leave_offs],  # optional, if you want the history
         }
 
     id = db.Column(db.Integer, primary_key=True)
@@ -60,6 +63,37 @@ class User(db.Model, SerializerMixin):
     db.DateTime(timezone=True),
     default=lambda: datetime.now(nairobi_tz)
 )
+    @property
+    def leave_days_this_year(self):
+        now = datetime.now(nairobi_tz)
+        start_of_year = nairobi_tz.localize(datetime(now.year, 1, 1))
+
+        total_hours = 0
+        for leave in self.leave_offs:
+            start = self._make_aware(leave.start_datetime)
+            end = self._make_aware(leave.end_datetime)
+
+            if end < start_of_year or start > now:
+                continue  # skip if leave is fully outside this year-to-date
+
+            # Clip leave period within [start_of_year, now]
+            effective_start = max(start, start_of_year)
+            effective_end = min(end, now)
+
+            total_hours += (effective_end - effective_start).total_seconds() / 3600.0
+
+        return round(total_hours / 24, 2)
+
+
+    def _make_aware(self, dt):
+        """Ensure datetime is tz-aware in Nairobi tz"""
+        if dt is None:
+            return None
+        if dt.tzinfo is None:
+            return nairobi_tz.localize(dt)
+        return dt.astimezone(nairobi_tz)
+
+
 
 
     def __repr__(self):
@@ -69,6 +103,10 @@ class User(db.Model, SerializerMixin):
         return f'{self.first_name} {self.last_name} ({self.role})'
     
     # Define relationship
+    leave_offs = db.relationship(
+    "LeaveOff",
+    back_populates="user",
+    cascade="all, delete-orphan")
     triage_records = db.relationship('TriageRecord', back_populates='nurse', cascade='all, delete-orphan')
     consultations = db.relationship('Consultation', back_populates='doctor', cascade='all, delete-orphan')
     test_requests = db.relationship('TestRequest', back_populates='technician', cascade='all, delete-orphan')
@@ -130,6 +168,72 @@ class User(db.Model, SerializerMixin):
 
     def check_password(self, plaintext_password):
         return bcrypt.check_password_hash(self._password_hash, plaintext_password)
+    
+class LeaveOff(db.Model, SerializerMixin):
+    __tablename__ = "leave_offs"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    user = db.relationship("User", back_populates="leave_offs")
+
+    start_datetime = db.Column(db.DateTime(timezone=True), nullable=False)
+    end_datetime = db.Column(db.DateTime(timezone=True), nullable=False)
+
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(nairobi_tz)
+    )
+
+    @hybrid_property
+    def duration_hours(self):
+        return (self.end_datetime - self.start_datetime).total_seconds() / 3600.0
+
+    @hybrid_property
+    def is_active(self):
+        now = datetime.now(nairobi_tz)
+
+        def make_aware(dt):
+            if dt is None:
+                return None
+            if dt.tzinfo is None:
+                return nairobi_tz.localize(dt)
+            return dt.astimezone(nairobi_tz)
+
+        start = make_aware(self.start_datetime)
+        end = make_aware(self.end_datetime)
+
+        return start <= now <= end
+
+
+    @hybrid_property
+    def computed_type(self):
+        """Automatically classifies by duration"""
+        return "off" if self.duration_hours < 49 else "leave"
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "start_datetime": self.start_datetime.astimezone(nairobi_tz).isoformat(),
+            "end_datetime": self.end_datetime.astimezone(nairobi_tz).isoformat(),
+            "type": self.computed_type,   
+            "duration_hours": self.duration_hours,
+            "is_active": self.is_active,
+        }
+
+    @validates("start_datetime", "end_datetime")
+    def validate_datetimes(self, key, value):
+        # Ensure tz-aware datetime
+        if value.tzinfo is None:
+            raise ValueError(f"{key} must include timezone info")
+
+        # If validating end_datetime, check it's after start_datetime
+        if key == "end_datetime" and self.start_datetime and value <= self.start_datetime:
+            raise ValueError("End datetime must be after start datetime")
+
+        return value
+
 
 
 

@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.exc import IntegrityError
 from marshmallow import ValidationError
-from models import db, User, roles, Patient, Visit, TriageRecord, Consultation, TestRequest, Prescription, Payment, TestType, Medicine, PharmacySale, OTCSale, PharmacyExpense
+from models import db, User, roles, Patient, Visit, TriageRecord, Consultation, TestRequest, Prescription, Payment, TestType, Medicine, PharmacySale, OTCSale, PharmacyExpense,LeaveOff
 from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
@@ -347,6 +347,105 @@ class UserByID(Resource):
 # Add routes to the API
 api.add_resource(Users, '/users')
 api.add_resource(UserByID, '/users/<int:id>')
+
+# LEAVEOFF MANAGEMENT ROUTES
+class LeaveOffs(Resource):
+
+    def get(self):
+        leaveoffs = [lo.to_dict() for lo in LeaveOff.query.all()]
+        return make_response(jsonify(leaveoffs), 200)
+
+    def post(self):
+        data = request.get_json()
+
+        # Ensure user exists
+        user = db.session.get(User, data.get('user_id'))
+        if not user:
+            return {'error': 'User not found'}, 404
+
+        try:
+            start_str = data.get("start_datetime").replace("Z", "+00:00")
+            end_str = data.get("end_datetime").replace("Z", "+00:00")
+
+            new_leaveoff = LeaveOff(
+                user_id=data.get("user_id"),
+                start_datetime=datetime.fromisoformat(start_str),
+                end_datetime=datetime.fromisoformat(end_str),
+)
+            db.session.add(new_leaveoff)
+            db.session.commit()
+
+        except ValueError as ve:
+            db.session.rollback()
+            return {'error': str(ve)}, 400
+
+        except IntegrityError:
+            db.session.rollback()
+            return {'error': 'Database constraint failed'}, 400
+
+        except Exception as e:
+            db.session.rollback()
+            return {'error': str(e)}, 500
+
+        return {
+            'message': 'Leave/Off successfully created',
+            'leaveoff': new_leaveoff.to_dict()
+        }, 201
+
+
+class LeaveOffByID(Resource):
+
+    def get(self, id):
+        leaveoff = db.session.get(LeaveOff, id)
+        if not leaveoff:
+            return {'message': 'Leave/Off not found'}, 404
+        return leaveoff.to_dict(), 200
+
+    def patch(self, id):
+        leaveoff = db.session.get(LeaveOff, id)
+        if not leaveoff:
+            return {'error': 'Leave/Off not found'}, 404
+
+        data = request.get_json()
+        try:
+            for key, value in data.items():
+                if key in ["start_datetime", "end_datetime"] and value:
+                    value = datetime.fromisoformat(value)
+                setattr(leaveoff, key, value)
+
+            db.session.commit()
+
+        except ValueError as ve:
+            db.session.rollback()
+            return {'error': str(ve)}, 400
+
+        except IntegrityError:
+            db.session.rollback()
+            return {'error': 'Database constraint failed'}, 400
+
+        except Exception as e:
+            db.session.rollback()
+            return {'error': str(e)}, 500
+
+        return {
+            'message': 'Leave/Off successfully updated',
+            'leaveoff': leaveoff.to_dict()
+        }, 200
+
+    def delete(self, id):
+        leaveoff = db.session.get(LeaveOff, id)
+        if not leaveoff:
+            return {'message': 'Leave/Off not found'}, 404
+
+        db.session.delete(leaveoff)
+        db.session.commit()
+        return {'message': f"Leave/Off {id} deleted"}, 200
+
+
+# Add routes to the API
+api.add_resource(LeaveOffs, '/leaveoffs')
+api.add_resource(LeaveOffByID, '/leaveoffs/<int:id>')
+
 
 
 # PATIENT MANAGEMENT ROUTES
