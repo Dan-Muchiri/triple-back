@@ -409,8 +409,12 @@ class LeaveOffByID(Resource):
         data = request.get_json()
         try:
             for key, value in data.items():
-                if key in ["start_datetime", "end_datetime"] and value:
-                    value = datetime.fromisoformat(value)
+                if key == "start_datetime":
+                    value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+                if key == "end_datetime":
+                    value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+
                 setattr(leaveoff, key, value)
 
             db.session.commit()
@@ -431,6 +435,7 @@ class LeaveOffByID(Resource):
             'message': 'Leave/Off successfully updated',
             'leaveoff': leaveoff.to_dict()
         }, 200
+
 
     def delete(self, id):
         leaveoff = db.session.get(LeaveOff, id)
