@@ -17,8 +17,10 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib import colors
+from reportlab.lib.units import mm
 from reportlab.lib.styles import getSampleStyleSheet
 from sqlalchemy import func
+from reportlab.lib.styles import ParagraphStyle
 
 # Load environment variables from .env file
 load_dotenv()
@@ -47,10 +49,26 @@ app.secret_key = os.environ.get('SECRET_KEY', 'fallback_secret')
 def generate_receipt(payment_id):
     payment = Payment.query.get_or_404(payment_id)
 
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=A4)
-    elements = []
+    # Define style for wrapped table text
+    table_text = ParagraphStyle(
+        'table_text',
+        fontSize=8,
+        leading=10
+    )
 
+    buffer = BytesIO()
+
+    # Receipt size (72.1mm wide, ~297mm height, roll printer)
+    receipt_width = 72.1 * mm
+    receipt_height = 297 * mm
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=(receipt_width, receipt_height),
+        leftMargin=5*mm, rightMargin=5*mm,
+        topMargin=5*mm, bottomMargin=5*mm
+    )
+
+    elements = []
     styles = getSampleStyleSheet()
     title_style = styles['Title']
     normal = styles['Normal']
@@ -58,7 +76,7 @@ def generate_receipt(payment_id):
     # Header
     elements.append(Paragraph("TRIPLE T.S. MEDICLINIC", title_style))
     elements.append(Paragraph("OFFICIAL RECEIPT", styles['Heading2']))
-    elements.append(Spacer(1, 20))
+    elements.append(Spacer(1, 5))
 
     # --- Case 1: Visit Payment ---
     if payment.visit:
@@ -70,7 +88,7 @@ def generate_receipt(payment_id):
             f"National ID: {patient.national_id}",
             f"Visit ID: {visit.id}",
             f"Payment ID: {payment.id}",
-            f"Payment Method: {payment.payment_method}",
+            f"Method: {payment.payment_method}",
             f"Date: {payment.created_at.strftime('%Y-%m-%d %H:%M')}"
         ]
         if payment.mpesa_receipt:
@@ -78,42 +96,49 @@ def generate_receipt(payment_id):
 
         for line in patient_info:
             elements.append(Paragraph(line, normal))
-        elements.append(Spacer(1, 15))
+        elements.append(Spacer(1, 5))
 
-        # Services Table (accurate from visit)
-        service_data = [["Service", "Amount (KES)"]]
+        # Services Table
+        service_data = [[Paragraph("Service", table_text), Paragraph("KES", table_text)]]
 
-        # Consultation fee
         if visit.consultation:
-            service_data.append(["Consultation", f"{visit.consultation.fee:,.2f}"])
+            service_data.append([
+                Paragraph("Consultation", table_text),
+                f"{visit.consultation.fee:,.2f}"
+            ])
 
-            # Prescriptions
             for p in visit.consultation.prescriptions:
                 med_name = p.medicine.name if p.medicine else "Unknown"
                 qty = p.dispensed_units or 0
                 price = p.total_price or (qty * (p.medicine.selling_price if p.medicine else 0))
-                service_data.append([f"Prescription: {med_name} x {qty}", f"{price:,.2f}"])
+                service_data.append([
+                    Paragraph(f"{med_name} x {qty}", table_text),
+                    f"{price:,.2f}"
+                ])
 
-            # Test requests
             for tr in visit.consultation.test_requests:
-                service_data.append([f"Test: {tr.test_type.name}", f"{tr.amount:,.2f}"])
+                service_data.append([
+                    Paragraph(f"Test: {tr.test_type.name}", table_text),
+                    f"{tr.amount:,.2f}"
+                ])
 
-        # Direct test requests (not linked to consultation)
         for tr in visit.test_requests:
-            service_data.append([f"Test: {tr.test_type.name}", f"{tr.amount:,.2f}"])
+            service_data.append([
+                Paragraph(f"Test: {tr.test_type.name}", table_text),
+                f"{tr.amount:,.2f}"
+            ])
 
         total_charges = visit.total_charges
-        col_widths = [300, 150]  # 2-column layout for visit
+        col_widths = [receipt_width*0.6, receipt_width*0.3]
 
     # --- Case 2: OTC Payment ---
     elif payment.otc_sale:
         otc_sale = payment.otc_sale
-
         otc_info = [
             f"Customer: {otc_sale.patient_name}",
-            f"OTC Sale ID: {otc_sale.id}",
+            f"OTC ID: {otc_sale.id}",
             f"Payment ID: {payment.id}",
-            f"Payment Method: {payment.payment_method}",
+            f"Method: {payment.payment_method}",
             f"Date: {payment.created_at.strftime('%Y-%m-%d %H:%M')}"
         ]
         if payment.mpesa_receipt:
@@ -121,81 +146,66 @@ def generate_receipt(payment_id):
 
         for line in otc_info:
             elements.append(Paragraph(line, normal))
-        elements.append(Spacer(1, 15))
+        elements.append(Spacer(1, 5))
 
-        # OTC Sales Table
-        service_data = [["Medicine", "Qty", "Unit Price (KES)", "Total (KES)"]]
+        service_data = [
+            [
+                Paragraph("Medicine", table_text),
+                Paragraph("Qty", table_text),
+                Paragraph("Price", table_text),
+                Paragraph("Total", table_text),
+            ]
+        ]
         for sale in otc_sale.sales:
             med_name = sale.medicine.name if sale.medicine else "N/A"
             service_data.append([
-                Paragraph(med_name, normal),  # wrapped medicine name
-                sale.dispensed_units,
+                Paragraph(med_name, table_text),
+                str(sale.dispensed_units),
                 f"{sale.medicine.selling_price:,.2f}" if sale.medicine else "0.00",
                 f"{sale.total_price:,.2f}"
             ])
 
         total_charges = otc_sale.total_price
-        col_widths = [200, 50, 100, 100]  # 4-column layout for OTC
+        col_widths = [receipt_width*0.4, receipt_width*0.15,
+                      receipt_width*0.2, receipt_width*0.2]
 
     else:
-        abort(400, "Payment not linked to a Visit or OTC Sale")
+        abort(400, "Payment not linked to Visit or OTC Sale")
 
-    # Build the table
+    # Table
     table = Table(service_data, colWidths=col_widths)
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
-        ("ALIGN", (1, 1), (-1, -1), "CENTER"),  # left align first column, center numbers
-        ("ALIGN", (0, 0), (0, -1), "LEFT"),
+        ("ALIGN", (0, 0), (-1, -1), "LEFT"),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("BOTTOMPADDING", (0, 0), (-1, 0), 12),
-        ("GRID", (0, 0), (-1, -1), 1, colors.black),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
     ]))
     elements.append(table)
-    elements.append(Spacer(1, 15))
+    elements.append(Spacer(1, 5))
 
     # Totals
-    elements.append(Paragraph(f"<b>Total Charges: KES {total_charges:,.2f}</b>", styles['Heading3']))
-    elements.append(Paragraph(f"<b>Paid Now: KES {payment.amount:,.2f}</b>", styles['Heading3']))
+    elements.append(Paragraph(f"<b>Total: {total_charges:,.2f}</b>", styles['Normal']))
+    elements.append(Paragraph(f"<b>Paid: {payment.amount:,.2f}</b>", styles['Normal']))
 
-    # If part payment, show balance
-    if payment.visit:
-        balance = visit.balance
-    elif payment.otc_sale:
-        balance = otc_sale.balance
-    else:
-        balance = 0
-
-    elements.append(Paragraph(f"<b>Balance: KES {balance:,.2f}</b>", styles['Heading3']))
-    elements.append(Spacer(1, 20))
+    balance = payment.visit.balance if payment.visit else (payment.otc_sale.balance if payment.otc_sale else 0)
+    elements.append(Paragraph(f"<b>Balance: {balance:,.2f}</b>", styles['Normal']))
+    elements.append(Spacer(1, 10))
 
     # Footer
     elements.append(Paragraph("Thank you for your payment.", styles['Italic']))
-    elements.append(Paragraph("This is a system-generated receipt from Triple T.S. Mediclinic.", styles['Italic']))
+    elements.append(Paragraph("System-generated receipt", styles['Italic']))
 
-    # Build PDF
+    # Build
     doc.build(elements)
     buffer.seek(0)
 
-    # Filename safe generation
-    if payment.visit:
-        first_name = payment.visit.patient.first_name or "Patient"
-        last_name = payment.visit.patient.last_name or ""
-    elif payment.otc_sale:
-        first_name = payment.otc_sale.patient_name or "Customer"
-        last_name = ""
-    else:
-        first_name, last_name = "Unknown", ""
-
-    safe_first = re.sub(r'[^A-Za-z0-9]+', '_', first_name)
-    safe_last = re.sub(r'[^A-Za-z0-9]+', '_', last_name)
-
-    filename = f"{safe_first}_{safe_last}_receipt_{payment.id}.pdf"
+    filename = f"receipt_{payment.id}.pdf"
 
     response = make_response(buffer.read())
     response.headers['Content-Type'] = 'application/pdf'
-    response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+    response.headers['Content-Disposition'] = f'inline; filename=\"{filename}\"'
     return response
+
 
 
 
