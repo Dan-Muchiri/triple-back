@@ -9,7 +9,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.exc import IntegrityError
 from marshmallow import ValidationError
-from models import db, User, roles, Patient, Visit, TriageRecord, Consultation, TestRequest, Prescription, Payment, TestType, Medicine, PharmacySale, OTCSale, PharmacyExpense,LeaveOff
+from models import db, User, roles, Patient, Visit, TriageRecord, Consultation, TestRequest, Prescription, Payment, TestType, Medicine, PharmacySale, OTCSale, PharmacyExpense,LeaveOff, OtherExpense
 from datetime import datetime, timedelta
 from functools import wraps
 from io import BytesIO
@@ -1509,6 +1509,93 @@ class PharmacyExpenseByID(Resource):
 api.add_resource(PharmacyExpenses, "/pharmacy_expenses")
 api.add_resource(PharmacyExpenseByID, "/pharmacy_expenses/<int:id>")
 
+class OtherExpenses(Resource):
+    def get(self):
+        """Return all other expenses"""
+        expenses = OtherExpense.query.all()
+        return [e.to_dict() for e in expenses], 200
+
+    def post(self):
+        """Add a new other expense"""
+        data = request.get_json()
+        try:
+            required_fields = ["expense_type", "amount"]
+            for field in required_fields:
+                if field not in data:
+                    return {"error": f"{field} is required"}, 400
+
+            amount = float(data["amount"])
+            if amount <= 0:
+                return {"error": "Amount must be greater than 0"}, 400
+
+            expense = OtherExpense(
+                expense_type=data["expense_type"],
+                quantity=data.get("quantity"),  # optional
+                amount=amount
+            )
+
+            db.session.add(expense)
+            db.session.commit()
+            return expense.to_dict(), 201
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+
+class OtherExpenseByID(Resource):
+    def get(self, id):
+        """Get a single expense by ID"""
+        expense = db.session.get(OtherExpense, id)
+        if not expense:
+            return {"message": "Other expense not found"}, 404
+        return expense.to_dict(), 200
+
+    def patch(self, id):
+        """Update an expense"""
+        expense = db.session.get(OtherExpense, id)
+        if not expense:
+            return {"message": "Other expense not found"}, 404
+
+        data = request.get_json()
+        try:
+            if "expense_type" in data:
+                expense.expense_type = data["expense_type"]
+
+            if "quantity" in data:
+                expense.quantity = data["quantity"]
+
+            if "amount" in data:
+                new_amount = float(data["amount"])
+                if new_amount <= 0:
+                    return {"error": "Amount must be greater than 0"}, 400
+                expense.amount = new_amount
+
+            db.session.commit()
+            return expense.to_dict(), 200
+
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+    def delete(self, id):
+        """Delete an expense"""
+        expense = db.session.get(OtherExpense, id)
+        if not expense:
+            return {"message": "Other expense not found"}, 404
+        try:
+            db.session.delete(expense)
+            db.session.commit()
+            return {"message": "Expense deleted successfully"}, 200
+        except Exception as e:
+            db.session.rollback()
+            return {"error": str(e)}, 400
+
+
+# ✅ Register routes
+api.add_resource(OtherExpenses, "/other_expenses")
+api.add_resource(OtherExpenseByID, "/other_expenses/<int:id>")
+
 
 class AdminAnalytics(Resource):
     def get(self):
@@ -1528,8 +1615,17 @@ class AdminAnalytics(Resource):
         total_revenue_past_month = db.session.query(
             func.coalesce(func.sum(Payment.amount), 0)
         ).filter(Payment.created_at >= first_day_month).scalar()
-        
 
+        # --- 2. Expenses ---
+        pharmacy_expenses_this_month = db.session.query(
+            func.coalesce(func.sum(PharmacyExpense.total_cost), 0)
+        ).filter(PharmacyExpense.created_at >= first_day_month).scalar()
+
+        other_expenses_this_month = db.session.query(
+            func.coalesce(func.sum(OtherExpense.amount), 0)
+        ).filter(OtherExpense.created_at >= first_day_month).scalar()
+
+        # --- 3. Lab & Imaging Counts ---
         lab_tests_done = (
             db.session.query(func.count(TestRequest.id))
             .join(TestType, TestRequest.test_type_id == TestType.id)
@@ -1544,9 +1640,7 @@ class AdminAnalytics(Resource):
             .scalar()
         )
 
-
-        # --- 5. Top 10 Medicines (Prescriptions + OTC Sales, this month only) ---
-        # --- 5. Top 10 Medicines (Prescriptions + OTC Sales, this month only) ---
+        # --- 4. Top 10 Medicines (Prescriptions + OTC Sales, this month only) ---
         prescription_query = (
             db.session.query(
                 Medicine.name.label("medicine_name"),
@@ -1570,7 +1664,6 @@ class AdminAnalytics(Resource):
         # Combine with union
         union_q = prescription_query.union_all(pharmacy_query).subquery()
 
-        # Aggregate again so same medicine merges
         combined_top = (
             db.session.query(
                 union_q.c.medicine_name,
@@ -1587,9 +1680,7 @@ class AdminAnalytics(Resource):
             for row in combined_top
         ]
 
-
-
-        # --- 7. Top 5 Lab & Imaging Tests (this month only) ---
+        # --- 5. Top Lab & Imaging Tests ---
         top_lab_tests = (
             db.session.query(TestType.name, func.count(TestRequest.id).label("count"))
             .join(TestRequest, TestRequest.test_type_id == TestType.id)
@@ -1613,20 +1704,20 @@ class AdminAnalytics(Resource):
         top_imaging_list = [{"test": t[0], "count": t[1]} for t in top_imaging_tests]
 
         return jsonify({
-        "metrics": {
-            "all_revenue": float(all_revenue),
-            "total_revenue_past_month": float(total_revenue_past_month),
-            "total_patients": total_patients,
-            "patients_this_month": patients_this_month,
-            "lab_tests_done_this_month": lab_tests_done,          # (optional consistency)
-            "imaging_tests_done_this_month": imaging_tests_done   # (optional consistency)
-        },
-        "top_medicines_this_month": top_medicines_list,
-        "top_lab_tests_this_month": top_lab_list,
-        "top_imaging_tests_this_month": top_imaging_list
-    })
-
-
+            "metrics": {
+                "all_revenue": round(float(all_revenue), 2),
+                "total_revenue_past_month": round(float(total_revenue_past_month), 2),
+                "pharmacy_expenses_this_month": round(float(pharmacy_expenses_this_month), 2),
+                "other_expenses_this_month": round(float(other_expenses_this_month), 2),
+                "total_patients": total_patients,
+                "patients_this_month": patients_this_month,
+                "lab_tests_done_this_month": lab_tests_done,
+                "imaging_tests_done_this_month": imaging_tests_done,
+            },
+            "top_medicines_this_month": top_medicines_list,
+            "top_lab_tests_this_month": top_lab_list,
+            "top_imaging_tests_this_month": top_imaging_list
+        })
 
 api.add_resource(AdminAnalytics, "/analytics")
 

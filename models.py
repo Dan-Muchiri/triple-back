@@ -968,6 +968,35 @@ class PharmacyExpense(db.Model, SerializerMixin):
         if value <= 0:
             raise ValueError("Quantity added must be greater than 0")
         return value
+    
+class OtherExpense(db.Model, SerializerMixin):
+    __tablename__ = "other_expenses"
+
+    id = db.Column(db.Integer, primary_key=True)
+    expense_type = db.Column(db.String(100), nullable=False)  # e.g. Electricity, Water, Repairs
+    quantity = db.Column(db.String(50), nullable=True)  # e.g. "500 units", "7 kilos"
+    amount = db.Column(db.Float, nullable=False)  # cost of the expense
+    created_at = db.Column(
+        db.DateTime(timezone=True),
+        default=lambda: datetime.now(nairobi_tz)
+    )
+
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "expense_type": self.expense_type,
+            "quantity": self.quantity,
+            "amount": self.amount,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+        }
+
+    @validates("amount")
+    def validate_amount(self, key, value):
+        if value <= 0:
+            raise ValueError("Amount must be greater than 0")
+        return value
+
+
 
 
 
