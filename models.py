@@ -254,6 +254,7 @@ class Patient(db.Model, SerializerMixin):
             'next_of_kin_name': self.next_of_kin_name,   # ✅ added
             'next_of_kin_phone': self.next_of_kin_phone,
             'location': self.location,
+            'subcounty': self.subcounty,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'visits': [
                 {
@@ -284,6 +285,7 @@ class Patient(db.Model, SerializerMixin):
     next_of_kin_name = db.Column(db.String(100), nullable=True)
     next_of_kin_phone = db.Column(db.String(20), nullable=True)
     location = db.Column(db.String(255), nullable=True)
+    subcounty = db.Column(db.String(255), nullable=True)
 
     created_at = db.Column(
         db.DateTime(timezone=True),
@@ -542,6 +544,7 @@ class Consultation(db.Model, SerializerMixin):
     diagnosis = db.Column(db.Text, nullable=True)
     notes = db.Column(db.Text, nullable=True)
     chief_complain = db.Column(db.Text, nullable=True)
+    past_illness = db.Column(db.Text, nullable=True)
     physical_exam = db.Column(db.Text, nullable=True)
     systemic_exam = db.Column(db.Text, nullable=True)
     created_at = db.Column(
@@ -570,6 +573,7 @@ class Consultation(db.Model, SerializerMixin):
             'notes': self.notes,
             'chief_complain': self.chief_complain,
             'physical_exam': self.physical_exam,
+            'past_illness': self.past_illness,
             'systemic_exam': self.systemic_exam,
             'created_at': self.created_at.isoformat() if self.created_at else None,
             'fee': self.fee,  # 👈 include consultation fee

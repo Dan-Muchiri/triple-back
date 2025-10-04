@@ -466,6 +466,7 @@ api.add_resource(LeaveOffByID, '/leaveoffs/<int:id>')
 # PATIENT MANAGEMENT ROUTES
 class Patients(Resource):
     def get(self):
+        # Leave GET unchanged (can later add Redis/memory caching if needed)
         patients = [patient.to_dict() for patient in Patient.query.all()]
         return make_response(jsonify(patients), 200)
 
@@ -473,35 +474,54 @@ class Patients(Resource):
         data = request.get_json()
 
         try:
-            dob_raw = data['dob']
-
+            dob_raw = data.get('dob')
             if isinstance(dob_raw, int):
                 dob = datetime.strptime(str(dob_raw), "%Y%m%d").date()
             elif isinstance(dob_raw, str):
                 dob = datetime.fromisoformat(dob_raw).date()
             else:
                 raise ValueError("Invalid DOB format")
-            
+
             new_patient = Patient(
                 first_name=data['first_name'],
                 last_name=data['last_name'],
                 gender=data['gender'],
-                dob=dob, 
+                dob=dob,
                 national_id=data.get('national_id'),
                 phone_number=data.get('phone_number'),
                 email=data.get('email'),
                 next_of_kin_phone=data.get('next_of_kin_phone'),
-                location=data.get('location')
+                location=data.get('location'),
+                subcounty=data.get('subcounty')
             )
 
             db.session.add(new_patient)
             db.session.commit()
 
-            return {'message': 'Patient successfully created', 'patient': new_patient.to_dict()}, 201
+            return {
+                'message': 'Patient successfully created',
+                'patient': {
+                    "id": new_patient.id,
+                    "first_name": new_patient.first_name,
+                    "last_name": new_patient.last_name,
+                    "gender": new_patient.gender,
+                    "dob": new_patient.dob.isoformat(),
+                    "national_id": new_patient.national_id,
+                    "phone_number": new_patient.phone_number,
+                    "email": new_patient.email,
+                    "next_of_kin_phone": new_patient.next_of_kin_phone,
+                    "location": new_patient.location,
+                    "subcounty": new_patient.subcounty 
+                }
+            }, 201
+
+        except (ValueError, IntegrityError) as e:
+            db.session.rollback()
+            return {'error': str(e)}, 400
 
         except Exception as e:
             db.session.rollback()
-            return {'error': str(e)}, 400
+            return {'error': 'Unexpected error: ' + str(e)}, 500
 
 
 class PatientByID(Resource):
@@ -518,11 +538,16 @@ class PatientByID(Resource):
 
         data = request.get_json()
 
-        if 'dob' in data:
+        # ✅ Only parse dob if needed
+        if "dob" in data:
             try:
-                data['dob'] = datetime.fromisoformat(data['dob']).date()
+                dob_raw = data["dob"]
+                if isinstance(dob_raw, int):
+                    data["dob"] = datetime.strptime(str(dob_raw), "%Y%m%d").date()
+                else:
+                    data["dob"] = datetime.fromisoformat(dob_raw).date()
             except Exception:
-                return {'error': 'Invalid date format for dob. Use YYYY-MM-DD.'}, 400
+                return {'error': 'Invalid date format for dob. Use YYYY-MM-DD or YYYYMMDD.'}, 400
 
         try:
             for key, value in data.items():
@@ -530,7 +555,20 @@ class PatientByID(Resource):
                     setattr(patient, key, value)
 
             db.session.commit()
-            return make_response(jsonify(patient.to_dict()), 200)
+
+            return {
+                "id": patient.id,
+                "first_name": patient.first_name,
+                "last_name": patient.last_name,
+                "gender": patient.gender,
+                "dob": patient.dob.isoformat() if patient.dob else None,
+                "national_id": patient.national_id,
+                "phone_number": patient.phone_number,
+                "email": patient.email,
+                "next_of_kin_phone": patient.next_of_kin_phone,
+                "location": patient.location,
+                "subcounty": patient.subcounty
+            }, 200
 
         except (ValueError, IntegrityError) as e:
             db.session.rollback()
@@ -538,7 +576,7 @@ class PatientByID(Resource):
 
         except Exception as e:
             db.session.rollback()
-            return {'error': 'An unexpected error occurred.'}, 500
+            return {'error': 'Unexpected error: ' + str(e)}, 500
 
 
 api.add_resource(Patients, '/patients')
@@ -703,42 +741,48 @@ class Consultations(Resource):
         consultations = Consultation.query.all()
         return [c.to_dict() for c in consultations], 200
 
-
     def post(self):
         data = request.get_json()
 
+        # ✅ Faster validation (set difference instead of looping)
+        required_fields = {'patient_id', 'doctor_id', 'visit_id'}
+        missing = required_fields - data.keys()
+        if missing:
+            return {'error': f"Missing fields: {', '.join(missing)}"}, 400
+
         try:
-            required_fields = ['patient_id', 'doctor_id', 'visit_id']
-            for field in required_fields:
-                if field not in data:
-                    return {'error': f"{field} is required"}, 400
-
             consultation = Consultation(
-              patient_id=data['patient_id'],
-               doctor_id=data['doctor_id'],
-              diagnosis=data.get('diagnosis'),
-              notes=data.get('notes'),
-              fee=200,
-               chief_complain=data.get('chief_complain'),
-              physical_exam=data.get('physical_exam'),
-              systemic_exam=data.get('systemic_exam'),
-        )
-
+                patient_id=data['patient_id'],
+                doctor_id=data['doctor_id'],
+                diagnosis=data.get('diagnosis'),
+                notes=data.get('notes'),
+                fee=200,
+                chief_complain=data.get('chief_complain'),
+                past_illness=data.get('past_illness'),
+                physical_exam=data.get('physical_exam'),
+                systemic_exam=data.get('systemic_exam'),
+            )
 
             db.session.add(consultation)
-            db.session.flush()  # Get consultation.id before commit
+            db.session.flush()  # ✅ ensures we get consultation.id without extra query
 
             visit = db.session.get(Visit, data['visit_id'])
             if not visit:
-                raise ValueError("Associated visit not found.")
-            visit.consultation_id = consultation.id
+                db.session.rollback()
+                return {'error': "Associated visit not found"}, 404
 
+            visit.consultation_id = consultation.id
             db.session.commit()
+
             return consultation.to_dict(), 201
 
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            return {'error': f'Database error: {str(e)}'}, 500
         except Exception as e:
             db.session.rollback()
             return {'error': str(e)}, 400
+
 
 class ConsultationByID(Resource):
     def get(self, id):
@@ -753,25 +797,35 @@ class ConsultationByID(Resource):
             return {'message': 'Consultation not found'}, 404
 
         data = request.get_json()
+        # ✅ Only update safe fields
+        valid_fields = {
+            'diagnosis', 'notes', 'chief_complain',
+            'past_illness',
+            'physical_exam', 'systemic_exam', 'fee'
+        }
         for key, value in data.items():
-            setattr(consultation, key, value)
+            if key in valid_fields:
+                setattr(consultation, key, value)
 
         try:
             db.session.commit()
             return consultation.to_dict(), 200
-        except Exception as e:
+        except SQLAlchemyError as e:
             db.session.rollback()
-            return {'error': str(e)}, 400
-
+            return {'error': f'Database error: {str(e)}'}, 500
 
     def delete(self, id):
         consultation = db.session.get(Consultation, id)
         if not consultation:
             return {'message': 'Consultation not found'}, 404
 
-        db.session.delete(consultation)
-        db.session.commit()
-        return {'message': f'Consultation {id} deleted'}, 200
+        try:
+            db.session.delete(consultation)
+            db.session.commit()
+            return {'message': f'Consultation {id} deleted'}, 200
+        except SQLAlchemyError as e:
+            db.session.rollback()
+            return {'error': f'Database error: {str(e)}'}, 500
 
 
 api.add_resource(Consultations, '/consultations')
